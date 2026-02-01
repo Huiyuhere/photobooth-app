@@ -1,14 +1,17 @@
 /**
  * Y2K Digital Nostalgia Photobooth
  * Design: Early 2000s digital camera aesthetic with retro film strip output
- * Colors: Soft pastel gradients with dark text for contrast
- * Typography: Permanent Marker (display), Space Mono (LCD/dates), DM Sans (body)
- * Features: Camera capture, sticker overlays, film strip with date stamps
+ * Workflow: Choose layout → Take photos → Add stickers → Generate QR & Download
  */
 
 import { Button } from "@/components/ui/button";
-import { Camera, Download, RotateCcw, Sparkles } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Camera, Download, RotateCcw, Sparkles, Image as ImageIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
+
+type LayoutType = "single" | "strip" | null;
 
 interface CapturedPhoto {
   dataUrl: string;
@@ -35,25 +38,41 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const filmStripCanvasRef = useRef<HTMLCanvasElement>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
   
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [layout, setLayout] = useState<LayoutType>(null);
   const [photos, setPhotos] = useState<CapturedPhoto[]>([]);
   const [stickers, setStickers] = useState<StickerPosition[]>([]);
   const [selectedSticker, setSelectedSticker] = useState<string | null>(null);
+  const [eventText, setEventText] = useState("");
   const [showCamera, setShowCamera] = useState(false);
   const [flash, setFlash] = useState(false);
   const [filmStripReady, setFilmStripReady] = useState(false);
+  const [filmStripDataUrl, setFilmStripDataUrl] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+  const [step, setStep] = useState<"layout" | "camera" | "stickers" | "final">("layout");
+
+  const photosNeeded = layout === "single" ? 1 : 4;
 
   // Initialize camera
   const startCamera = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { 
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
         audio: false,
       });
       setStream(mediaStream);
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
+        // Wait for video to be ready
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play();
+        };
       }
       setShowCamera(true);
     } catch (err) {
@@ -67,6 +86,9 @@ export default function Home() {
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
     setShowCamera(false);
   };
@@ -87,39 +109,29 @@ export default function Home() {
     // Draw video frame
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Draw stickers on canvas
-    stickers.forEach((sticker) => {
-      const img = new Image();
-      img.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
-      
-      const stickerSize = 120 * sticker.scale;
-      const x = (sticker.x / 100) * canvas.width - stickerSize / 2;
-      const y = (sticker.y / 100) * canvas.height - stickerSize / 2;
-      
-      ctx.save();
-      ctx.translate(x + stickerSize / 2, y + stickerSize / 2);
-      ctx.rotate((sticker.rotation * Math.PI) / 180);
-      ctx.drawImage(img, -stickerSize / 2, -stickerSize / 2, stickerSize, stickerSize);
-      ctx.restore();
-    });
-
     // Get image data
-    const dataUrl = canvas.toDataURL("image/png");
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
     
     // Flash effect
     setFlash(true);
-    setTimeout(() => setFlash(false), 200);
+    setTimeout(() => setFlash(false), 150);
 
     // Add to photos
-    setPhotos((prev) => [...prev, { dataUrl, timestamp: new Date() }]);
-    setStickers([]);
+    const newPhotos = [...photos, { dataUrl, timestamp: new Date() }];
+    setPhotos(newPhotos);
+
+    // If we have enough photos, move to sticker step
+    if (newPhotos.length >= photosNeeded) {
+      stopCamera();
+      setStep("stickers");
+    }
   };
 
-  // Add sticker to canvas
+  // Add sticker to preview
   const addSticker = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!selectedSticker) return;
+    if (!selectedSticker || !previewContainerRef.current) return;
     
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = previewContainerRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
     
@@ -135,7 +147,7 @@ export default function Home() {
     setStickers((prev) => [...prev, newSticker]);
   };
 
-  // Generate film strip
+  // Generate film strip with stickers
   const generateFilmStrip = async () => {
     if (photos.length === 0 || !filmStripCanvasRef.current) return;
 
@@ -143,36 +155,30 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Film strip dimensions (portrait orientation like reference)
+    const isSingle = layout === "single";
+    
+    // Canvas dimensions
     const stripWidth = 600;
     const photoWidth = 560;
-    const photoHeight = 400;
+    const photoHeight = isSingle ? 560 : 400;
     const margin = 20;
     const headerHeight = 100;
     const dateHeight = 60;
     const footerHeight = 180;
     const spacing = 10;
     
-    const totalHeight = headerHeight + photos.length * (photoHeight + spacing) + dateHeight + footerHeight + margin * 2;
+    const photoSectionHeight = isSingle 
+      ? photoHeight 
+      : photos.length * (photoHeight + spacing) - spacing;
+    
+    const totalHeight = headerHeight + photoSectionHeight + dateHeight + footerHeight + margin * 2;
     
     canvas.width = stripWidth;
     canvas.height = totalHeight;
 
-    // Load background texture
-    const bgImg = new Image();
-    bgImg.src = "/images/hero-background.png";
-    await new Promise((resolve) => {
-      bgImg.onload = resolve;
-    });
-
-    // White background with texture
+    // White background
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, stripWidth, totalHeight);
-    
-    // Add subtle texture
-    ctx.globalAlpha = 0.15;
-    ctx.drawImage(bgImg, 0, 0, stripWidth, totalHeight);
-    ctx.globalAlpha = 1;
 
     // Film grain effect
     ctx.fillStyle = "rgba(0, 0, 0, 0.03)";
@@ -197,7 +203,7 @@ export default function Home() {
     const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
     ctx.fillStyle = "#ff9500";
     ctx.font = "bold 24px 'Space Mono', monospace";
-    const dateText = `${monthYear} — PARTY TIME`;
+    const dateText = `${monthYear} — ${eventText.toUpperCase() || "PARTY TIME"}`;
     ctx.fillText(dateText, margin + 15, margin + headerHeight - 25);
 
     // Draw photos
@@ -214,8 +220,23 @@ export default function Home() {
       ctx.fillStyle = "#f5f5f5";
       ctx.fillRect(margin - 5, currentY - 5, photoWidth + 10, photoHeight + 10);
       
-      // Draw photo
-      ctx.drawImage(img, margin, currentY, photoWidth, photoHeight);
+      // Draw photo (crop to fit)
+      const imgAspect = img.width / img.height;
+      const targetAspect = photoWidth / photoHeight;
+      
+      let sx = 0, sy = 0, sw = img.width, sh = img.height;
+      
+      if (imgAspect > targetAspect) {
+        // Image is wider, crop sides
+        sw = img.height * targetAspect;
+        sx = (img.width - sw) / 2;
+      } else {
+        // Image is taller, crop top/bottom
+        sh = img.width / targetAspect;
+        sy = (img.height - sh) / 2;
+      }
+      
+      ctx.drawImage(img, sx, sy, sw, sh, margin, currentY, photoWidth, photoHeight);
       
       // Film grain on photo
       ctx.fillStyle = "rgba(0, 0, 0, 0.04)";
@@ -228,18 +249,37 @@ export default function Home() {
       currentY += photoHeight + spacing;
     }
 
-    // Footer with stickers and text
-    const footerY = currentY + dateHeight;
+    // Draw stickers on canvas
+    for (const sticker of stickers) {
+      const img = new Image();
+      img.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
+      
+      await new Promise((resolve) => {
+        img.onload = resolve;
+      });
+      
+      const stickerSize = 80 * sticker.scale;
+      const x = (sticker.x / 100) * stripWidth - stickerSize / 2;
+      const y = (sticker.y / 100) * totalHeight - stickerSize / 2;
+      
+      ctx.save();
+      ctx.translate(x + stickerSize / 2, y + stickerSize / 2);
+      ctx.rotate((sticker.rotation * Math.PI) / 180);
+      ctx.drawImage(img, -stickerSize / 2, -stickerSize / 2, stickerSize, stickerSize);
+      ctx.restore();
+    }
+
+    // Footer with decorative stickers
+    const footerY = currentY - spacing + dateHeight;
     
-    // Load and draw sticker decorations
-    const stickerPromises = [
+    const decorStickers = [
       { src: "/images/sticker-star.png", x: margin + 30, y: footerY + 20, size: 60 },
       { src: "/images/sticker-heart.png", x: margin + 480, y: footerY + 30, size: 50 },
       { src: "/images/sticker-rainbow.png", x: margin + 420, y: footerY + 100, size: 70 },
       { src: "/images/sticker-smiley.png", x: margin + 50, y: footerY + 110, size: 55 },
     ];
 
-    for (const sticker of stickerPromises) {
+    for (const sticker of decorStickers) {
       const img = new Image();
       img.src = sticker.src;
       await new Promise((resolve) => {
@@ -257,35 +297,52 @@ export default function Home() {
     ctx.fillStyle = "#666666";
     ctx.fillText("Made with ♥", margin + 140, footerY + 130);
 
+    const dataUrl = canvas.toDataURL("image/png");
+    setFilmStripDataUrl(dataUrl);
     setFilmStripReady(true);
+    
+    // Generate share URL (in production, upload to server and get URL)
+    // For now, we'll use a data URL approach
+    const shareableUrl = `${window.location.origin}/share?data=${encodeURIComponent(dataUrl)}`;
+    setShareUrl(shareableUrl);
   };
 
   // Download film strip
   const downloadFilmStrip = () => {
-    if (!filmStripCanvasRef.current) return;
+    if (!filmStripDataUrl) return;
     
-    const canvas = filmStripCanvasRef.current;
     const link = document.createElement("a");
     const timestamp = new Date().toISOString().slice(0, 10);
     link.download = `photobooth-${timestamp}.png`;
-    link.href = canvas.toDataURL("image/png");
+    link.href = filmStripDataUrl;
     link.click();
   };
 
   // Reset everything
   const reset = () => {
+    setLayout(null);
     setPhotos([]);
     setStickers([]);
+    setEventText("");
     setFilmStripReady(false);
+    setFilmStripDataUrl("");
+    setShareUrl("");
+    setStep("layout");
     stopCamera();
   };
 
-  // Generate film strip when photos are added
-  useEffect(() => {
-    if (photos.length > 0) {
-      generateFilmStrip();
-    }
-  }, [photos]);
+  // Handle layout selection
+  const selectLayout = (type: LayoutType) => {
+    setLayout(type);
+    setStep("camera");
+    startCamera();
+  };
+
+  // Move to final step
+  const moveToFinal = () => {
+    setStep("final");
+    generateFilmStrip();
+  };
 
   // Cleanup on unmount
   useEffect(() => {
@@ -312,48 +369,55 @@ export default function Home() {
       <div className="fixed inset-0 -z-10 film-grain" />
 
       {/* Main content */}
-      <div className="container mx-auto px-4 py-8 max-w-2xl">
+      <div className="container mx-auto px-4 py-6 max-w-2xl">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="font-display text-5xl md:text-6xl text-foreground mb-3 drop-shadow-lg">
+        <div className="text-center mb-6">
+          <h1 className="font-display text-4xl md:text-5xl text-foreground mb-2 drop-shadow-lg">
             Retro Photobooth
           </h1>
-          <p className="font-mono text-sm text-muted-foreground tracking-wider">
+          <p className="font-mono text-xs text-muted-foreground tracking-wider">
             CAPTURE · DECORATE · SHARE
           </p>
         </div>
 
-        {/* Camera view */}
-        {!showCamera && photos.length === 0 && (
-          <div className="bg-card/90 backdrop-blur-sm rounded-2xl p-8 shadow-2xl border-4 border-white">
-            <div className="text-center space-y-6">
-              <div className="w-24 h-24 mx-auto bg-primary/10 rounded-full flex items-center justify-center">
-                <Camera className="w-12 h-12 text-primary" />
+        {/* Step 1: Layout Selection */}
+        {step === "layout" && (
+          <div className="space-y-4">
+            <div className="bg-card/90 backdrop-blur-sm rounded-2xl p-6 shadow-2xl border-4 border-white">
+              <h2 className="font-display text-2xl text-foreground mb-4 text-center">
+                Choose Your Layout
+              </h2>
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={() => selectLayout("single")}
+                  className="bg-white rounded-xl p-6 border-4 border-border hover:border-primary transition-all hover:scale-105 active:scale-95"
+                >
+                  <div className="aspect-square bg-gradient-to-br from-primary/20 to-accent/20 rounded-lg mb-3 flex items-center justify-center">
+                    <ImageIcon className="w-12 h-12 text-primary" />
+                  </div>
+                  <p className="font-mono text-sm font-bold text-foreground">1 PHOTO</p>
+                </button>
+                
+                <button
+                  onClick={() => selectLayout("strip")}
+                  className="bg-white rounded-xl p-6 border-4 border-border hover:border-primary transition-all hover:scale-105 active:scale-95"
+                >
+                  <div className="aspect-square bg-gradient-to-br from-primary/20 to-accent/20 rounded-lg mb-3 flex flex-col gap-1 p-2">
+                    {[1, 2, 3, 4].map((i) => (
+                      <div key={i} className="flex-1 bg-primary/30 rounded" />
+                    ))}
+                  </div>
+                  <p className="font-mono text-sm font-bold text-foreground">4 PHOTOS</p>
+                </button>
               </div>
-              <div>
-                <h2 className="font-display text-3xl text-foreground mb-2">
-                  Ready to Snap?
-                </h2>
-                <p className="font-sans text-muted-foreground">
-                  Create your retro film strip with fun stickers!
-                </p>
-              </div>
-              <Button
-                onClick={startCamera}
-                size="lg"
-                className="font-mono text-lg px-8 py-6 rounded-xl"
-              >
-                <Camera className="mr-2" />
-                Start Camera
-              </Button>
             </div>
           </div>
         )}
 
-        {/* Camera interface */}
-        {showCamera && (
+        {/* Step 2: Camera */}
+        {step === "camera" && showCamera && (
           <div className="space-y-4">
-            {/* Video preview with stickers */}
+            {/* Video preview */}
             <div className="relative bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white">
               <video
                 ref={videoRef}
@@ -362,12 +426,77 @@ export default function Home() {
                 muted
                 className="w-full h-auto"
               />
+
+              {/* Flash effect */}
+              {flash && (
+                <div className="absolute inset-0 bg-white" />
+              )}
               
-              {/* Sticker overlay */}
+              {/* Photo counter */}
+              <div className="absolute top-4 right-4 bg-black/70 backdrop-blur-sm rounded-full px-4 py-2">
+                <p className="font-mono text-white text-sm font-bold">
+                  {photos.length} / {photosNeeded}
+                </p>
+              </div>
+            </div>
+
+            {/* Event name input */}
+            <div className="bg-card/90 backdrop-blur-sm rounded-xl p-4 border-2 border-white">
+              <Label htmlFor="event" className="font-mono text-sm font-bold mb-2 block">
+                EVENT NAME (OPTIONAL)
+              </Label>
+              <Input
+                id="event"
+                value={eventText}
+                onChange={(e) => setEventText(e.target.value)}
+                placeholder="e.g., CNY GATHERING"
+                className="font-mono uppercase"
+                maxLength={30}
+              />
+            </div>
+
+            {/* Controls */}
+            <div className="flex gap-3">
+              <Button
+                onClick={capturePhoto}
+                size="lg"
+                className="flex-1 font-mono text-lg py-6 rounded-xl"
+              >
+                <Camera className="mr-2" />
+                Capture
+              </Button>
+              <Button
+                onClick={reset}
+                variant="outline"
+                size="lg"
+                className="font-mono px-6 py-6 rounded-xl bg-card/90"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Add Stickers */}
+        {step === "stickers" && (
+          <div className="space-y-4">
+            {/* Preview with stickers */}
+            <div className="bg-card/90 backdrop-blur-sm rounded-2xl p-4 shadow-2xl border-4 border-white">
+              <h2 className="font-display text-2xl text-foreground mb-3 text-center">
+                Add Stickers
+              </h2>
+              
               <div
-                className="absolute inset-0 cursor-crosshair"
+                ref={previewContainerRef}
+                className="relative bg-white rounded-xl overflow-hidden cursor-crosshair"
                 onClick={addSticker}
               >
+                <canvas
+                  ref={filmStripCanvasRef}
+                  className="w-full h-auto max-h-[500px] object-contain"
+                />
+                
+                {/* Sticker overlays */}
                 {stickers.map((sticker) => (
                   <img
                     key={sticker.id}
@@ -378,25 +507,20 @@ export default function Home() {
                       left: `${sticker.x}%`,
                       top: `${sticker.y}%`,
                       transform: `translate(-50%, -50%) rotate(${sticker.rotation}deg) scale(${sticker.scale})`,
-                      width: "80px",
-                      height: "80px",
+                      width: "60px",
+                      height: "60px",
                     }}
                   />
                 ))}
               </div>
-
-              {/* Flash effect */}
-              {flash && (
-                <div className="absolute inset-0 bg-white animate-pulse" />
-              )}
             </div>
 
             {/* Sticker selector */}
             <div className="bg-card/90 backdrop-blur-sm rounded-xl p-4 border-2 border-white">
               <div className="flex items-center gap-3 mb-3">
                 <Sparkles className="w-5 h-5 text-primary" />
-                <span className="font-mono text-sm font-bold text-foreground">
-                  TAP STICKER, THEN TAP VIDEO
+                <span className="font-mono text-xs font-bold text-foreground">
+                  TAP STICKER, THEN TAP PREVIEW
                 </span>
               </div>
               <div className="flex gap-3 justify-center">
@@ -423,51 +547,60 @@ export default function Home() {
             {/* Controls */}
             <div className="flex gap-3">
               <Button
-                onClick={capturePhoto}
+                onClick={moveToFinal}
                 size="lg"
                 className="flex-1 font-mono text-lg py-6 rounded-xl"
               >
-                <Camera className="mr-2" />
-                Capture ({photos.length})
+                Generate
               </Button>
               <Button
-                onClick={stopCamera}
+                onClick={reset}
                 variant="outline"
                 size="lg"
                 className="font-mono px-6 py-6 rounded-xl bg-card/90"
               >
-                Done
+                <RotateCcw className="w-5 h-5" />
               </Button>
             </div>
           </div>
         )}
 
-        {/* Film strip preview */}
-        {photos.length > 0 && !showCamera && (
+        {/* Step 4: Final Result with QR */}
+        {step === "final" && filmStripReady && (
           <div className="space-y-4">
             <div className="bg-card/90 backdrop-blur-sm rounded-2xl p-6 shadow-2xl border-4 border-white">
-              <div className="text-center mb-4">
-                <h2 className="font-display text-3xl text-foreground mb-2">
-                  Your Film Strip!
-                </h2>
-                <p className="font-mono text-sm text-muted-foreground">
-                  {photos.length} {photos.length === 1 ? "PHOTO" : "PHOTOS"} · {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }).toUpperCase()}
-                </p>
-              </div>
+              <h2 className="font-display text-3xl text-foreground mb-4 text-center">
+                Your Memories!
+              </h2>
 
-              {/* Film strip canvas */}
-              <div className="bg-white rounded-xl p-4 max-h-[600px] overflow-y-auto">
-                <canvas
-                  ref={filmStripCanvasRef}
+              {/* Film strip preview */}
+              <div className="bg-white rounded-xl p-4 mb-6 max-h-[400px] overflow-y-auto">
+                <img
+                  src={filmStripDataUrl}
+                  alt="Film strip"
                   className="w-full h-auto"
                 />
               </div>
 
+              {/* QR Code */}
+              <div className="bg-white rounded-xl p-6 mb-6 text-center">
+                <p className="font-mono text-sm font-bold text-foreground mb-3">
+                  SCAN TO VIEW & DOWNLOAD
+                </p>
+                <div className="inline-block p-4 bg-white rounded-lg">
+                  <QRCodeSVG
+                    value={shareUrl}
+                    size={200}
+                    level="H"
+                    includeMargin={true}
+                  />
+                </div>
+              </div>
+
               {/* Actions */}
-              <div className="flex gap-3 mt-6">
+              <div className="flex gap-3">
                 <Button
                   onClick={downloadFilmStrip}
-                  disabled={!filmStripReady}
                   size="lg"
                   className="flex-1 font-mono text-lg py-6 rounded-xl"
                 >
