@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type LayoutType = "single" | "strip" | null;
 type FacingMode = "user" | "environment";
+type CameraFilter = "original" | "retro";
 
 interface CapturedPhoto {
   dataUrl: string;
@@ -68,6 +69,7 @@ export default function Home() {
   const [facingMode, setFacingMode] = useState<FacingMode>("user");
   const [countdown, setCountdown] = useState<number | null>(null);
   const [stickerPage, setStickerPage] = useState(0);
+  const [cameraFilter, setCameraFilter] = useState<CameraFilter>("original");
 
   const photosNeeded = layout === "single" ? 1 : 4;
   const stickersPerPage = 7;
@@ -145,6 +147,50 @@ export default function Home() {
     }
   }, [countdown]);
 
+  // Apply retro filter to image data
+  const applyRetroFilter = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Warm sepia-like tone with slight desaturation
+      data[i] = Math.min(255, r * 1.1 + 20);     // Red boost
+      data[i + 1] = Math.min(255, g * 0.95 + 10); // Slight green reduction
+      data[i + 2] = Math.min(255, b * 0.85);      // Blue reduction for warmth
+      
+      // Add slight contrast
+      data[i] = Math.min(255, Math.max(0, (data[i] - 128) * 1.1 + 128));
+      data[i + 1] = Math.min(255, Math.max(0, (data[i + 1] - 128) * 1.1 + 128));
+      data[i + 2] = Math.min(255, Math.max(0, (data[i + 2] - 128) * 1.1 + 128));
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
+    
+    // Add vignette effect
+    const gradient = ctx.createRadialGradient(
+      width / 2, height / 2, height * 0.3,
+      width / 2, height / 2, height * 0.8
+    );
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+    
+    // Add film grain
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.03)';
+    for (let j = 0; j < 3000; j++) {
+      ctx.fillRect(Math.random() * width, Math.random() * height, 1, 1);
+    }
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
+    for (let j = 0; j < 2000; j++) {
+      ctx.fillRect(Math.random() * width, Math.random() * height, 1, 1);
+    }
+  };
+
   // Capture photo
   const capturePhoto = () => {
     if (!videoRef.current || !canvasRef.current || !cameraReady) return;
@@ -164,6 +210,14 @@ export default function Home() {
     }
     
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    // Reset transform before applying filter
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    // Apply retro filter if selected
+    if (cameraFilter === "retro") {
+      applyRetroFilter(ctx, canvas.width, canvas.height);
+    }
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
     
@@ -534,7 +588,13 @@ export default function Home() {
     setCameraError("");
     setSelectedSticker(null);
     setSelectedPlacedSticker(null);
+    setCameraFilter("original");
     stopCamera();
+  };
+
+  // Toggle filter
+  const toggleFilter = () => {
+    setCameraFilter(cameraFilter === "original" ? "retro" : "original");
   };
 
   const selectLayout = (type: LayoutType) => {
@@ -639,7 +699,10 @@ export default function Home() {
               playsInline
               muted
               className="w-full h-full object-cover"
-              style={{ transform: facingMode === "user" ? "scaleX(-1)" : "none" }}
+              style={{ 
+                transform: facingMode === "user" ? "scaleX(-1)" : "none",
+                filter: cameraFilter === "retro" ? "sepia(0.3) contrast(1.1) saturate(0.9) brightness(1.05)" : "none"
+              }}
             />
 
             {/* LCD overlay */}
@@ -705,6 +768,30 @@ export default function Home() {
                 className="bg-black/50 border-gray-600 text-white font-mono text-center placeholder:text-gray-500"
                 maxLength={25}
               />
+            </div>
+            
+            {/* Filter toggle */}
+            <div className="flex items-center justify-center gap-2 mb-4">
+              <button
+                onClick={() => setCameraFilter("original")}
+                className={`px-4 py-2 rounded-lg font-mono text-xs transition-all ${
+                  cameraFilter === "original"
+                    ? "bg-orange-500 text-white"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                }`}
+              >
+                ORIGINAL
+              </button>
+              <button
+                onClick={() => setCameraFilter("retro")}
+                className={`px-4 py-2 rounded-lg font-mono text-xs transition-all ${
+                  cameraFilter === "retro"
+                    ? "bg-orange-500 text-white"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                }`}
+              >
+                RETRO
+              </button>
             </div>
             
             <div className="flex items-center justify-center gap-6">
