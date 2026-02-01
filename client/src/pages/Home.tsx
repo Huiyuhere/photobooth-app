@@ -714,11 +714,11 @@ export default function Home() {
         </div>
       )}
 
-      {/* Step 2: Camera - Full Screen */}
+      {/* Step 2: Camera - Full Screen on mobile, 80/20 split on desktop */}
       {step === "camera" && (
         <div className="fixed inset-0 bg-black flex flex-col">
-          {/* Video preview */}
-          <div className="flex-1 relative">
+          {/* Video preview - takes 80% on desktop, flex-1 on mobile */}
+          <div className="flex-1 md:flex-none md:h-[80vh] relative">
             <video
               ref={videoRef}
               autoPlay
@@ -790,8 +790,8 @@ export default function Home() {
             )}
           </div>
 
-          {/* Bottom controls */}
-          <div className="bg-gradient-to-t from-[#2a2a2a] to-[#1a1a1a] p-4 pb-8">
+          {/* Bottom controls - minimum 20% height on desktop */}
+          <div className="bg-gradient-to-t from-[#2a2a2a] to-[#1a1a1a] p-4 pb-8 md:min-h-[20vh] md:flex md:flex-col md:justify-center">
             {/* Event name input */}
             <div className="mb-4">
               <Input
