@@ -717,8 +717,8 @@ export default function Home() {
       {/* Step 2: Camera - Full Screen on mobile, 80/20 split on desktop */}
       {step === "camera" && (
         <div className="fixed inset-0 bg-black flex flex-col">
-          {/* Video preview - takes 80% on desktop, flex-1 on mobile */}
-          <div className="flex-1 md:flex-none md:h-[80vh] relative">
+          {/* Video preview - takes remaining space after controls */}
+          <div className="relative overflow-hidden" style={{ height: 'calc(100vh - 180px)', maxHeight: 'calc(100dvh - 180px)' }}>
             <video
               ref={videoRef}
               autoPlay
@@ -790,21 +790,27 @@ export default function Home() {
             )}
           </div>
 
-          {/* Bottom controls - minimum 20% height on desktop */}
-          <div className="bg-gradient-to-t from-[#2a2a2a] to-[#1a1a1a] p-4 pb-8 md:min-h-[20vh] md:flex md:flex-col md:justify-center">
+          {/* Bottom controls - fixed height to ensure visibility on all browsers */}
+          <div 
+            className="bg-gradient-to-t from-[#2a2a2a] to-[#1a1a1a] p-3 flex-shrink-0 flex flex-col justify-center"
+            style={{ 
+              height: '180px',
+              paddingBottom: 'max(env(safe-area-inset-bottom, 12px), 12px)'
+            }}
+          >
             {/* Event name input */}
-            <div className="mb-4">
+            <div className="mb-2">
               <Input
                 value={eventText}
                 onChange={(e) => setEventText(e.target.value)}
                 placeholder="EVENT NAME (optional)"
-                className="bg-black/50 border-gray-600 text-white font-mono text-center placeholder:text-gray-500"
+                className="bg-black/50 border-gray-600 text-white font-mono text-center placeholder:text-gray-500 h-9 text-sm"
                 maxLength={25}
               />
             </div>
             
             {/* Filter toggle */}
-            <div className="flex items-center justify-center gap-2 mb-4">
+            <div className="flex items-center justify-center gap-2 mb-3">
               <button
                 onClick={() => setCameraFilter("original")}
                 className={`px-4 py-2 rounded-lg font-mono text-xs transition-all ${
@@ -827,25 +833,25 @@ export default function Home() {
               </button>
             </div>
             
-            <div className="flex items-center justify-center gap-6">
+            <div className="flex items-center justify-center gap-4">
               {/* Cancel */}
               <button
                 onClick={reset}
                 disabled={isAutoCapturing}
-                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center disabled:opacity-30"
+                className="camera-btn w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30"
               >
-                <X className="w-6 h-6 text-gray-700" />
+                <X className="w-5 h-5 text-gray-700" />
               </button>
 
               {/* Shutter */}
               <button
                 onClick={startCapture}
                 disabled={!cameraReady || countdown !== null || isAutoCapturing}
-                className="shutter-btn w-20 h-20 rounded-full flex items-center justify-center disabled:opacity-50"
+                className="shutter-btn w-16 h-16 rounded-full flex items-center justify-center disabled:opacity-50"
               >
-                <div className="w-16 h-16 rounded-full border-4 border-white/30 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-full border-4 border-white/30 flex items-center justify-center">
                   {layout === "strip" && !isAutoCapturing && (
-                    <span className="font-mono text-xs text-white/70">AUTO</span>
+                    <span className="font-mono text-[10px] text-white/70">AUTO</span>
                   )}
                 </div>
               </button>
@@ -854,9 +860,9 @@ export default function Home() {
               <button
                 onClick={toggleCamera}
                 disabled={isAutoCapturing}
-                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center disabled:opacity-30"
+                className="camera-btn w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30"
               >
-                <RefreshCw className="w-6 h-6 text-gray-700" />
+                <RefreshCw className="w-5 h-5 text-gray-700" />
               </button>
             </div>
           </div>
@@ -865,8 +871,8 @@ export default function Home() {
 
       {/* Step 3: Add Stickers */}
       {step === "stickers" && (
-        <div className="min-h-screen flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090]">
-          <div className="camera-body m-2 rounded-xl p-3 flex-1 flex flex-col">
+        <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] overflow-hidden">
+          <div className="camera-body m-2 rounded-xl p-3 flex-1 flex flex-col overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between mb-2">
               <span className="font-display text-xs text-gray-600">Cyber-shot</span>
@@ -1027,7 +1033,7 @@ export default function Home() {
 
       {/* Step 4: Final Result */}
       {step === "final" && (
-        <div className="min-h-screen flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2">
+        <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 overflow-auto">
           <div className="camera-body rounded-xl p-4 flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <span className="font-display text-sm text-gray-600">Cyber-shot</span>
