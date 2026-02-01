@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Camera, Download, RotateCcw, Sparkles, Image as ImageIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 type LayoutType = "single" | "strip" | null;
@@ -46,56 +46,88 @@ export default function Home() {
   const [stickers, setStickers] = useState<StickerPosition[]>([]);
   const [selectedSticker, setSelectedSticker] = useState<string | null>(null);
   const [eventText, setEventText] = useState("");
-  const [showCamera, setShowCamera] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [flash, setFlash] = useState(false);
   const [filmStripReady, setFilmStripReady] = useState(false);
   const [filmStripDataUrl, setFilmStripDataUrl] = useState("");
-  const [shareUrl, setShareUrl] = useState("");
+  const [previewDataUrl, setPreviewDataUrl] = useState("");
   const [step, setStep] = useState<"layout" | "camera" | "stickers" | "final">("layout");
+  const [cameraError, setCameraError] = useState("");
 
   const photosNeeded = layout === "single" ? 1 : 4;
 
   // Initialize camera
-  const startCamera = async () => {
+  const startCamera = useCallback(async () => {
+    setCameraError("");
+    setCameraReady(false);
+    
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { 
+      // Stop any existing stream first
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+
+      const constraints = {
+        video: {
           facingMode: "user",
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 }
         },
         audio: false,
-      });
+      };
+
+      console.log("Requesting camera access...");
+      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log("Camera stream obtained:", mediaStream.getVideoTracks()[0].label);
+      
       setStream(mediaStream);
+      
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        // Wait for video to be ready
+        
+        // Wait for video to be ready to play
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
+          console.log("Video metadata loaded");
+          if (videoRef.current) {
+            videoRef.current.play()
+              .then(() => {
+                console.log("Video playing");
+                setCameraReady(true);
+              })
+              .catch((err) => {
+                console.error("Error playing video:", err);
+                setCameraError("Failed to start video playback");
+              });
+          }
         };
       }
-      setShowCamera(true);
-    } catch (err) {
-      console.error("Camera access denied:", err);
-      alert("Please allow camera access to use the photobooth!");
+    } catch (err: any) {
+      console.error("Camera access error:", err);
+      setCameraError(err.message || "Camera access denied. Please allow camera permissions.");
     }
-  };
+  }, [stream]);
 
   // Stop camera
-  const stopCamera = () => {
+  const stopCamera = useCallback(() => {
     if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+      stream.getTracks().forEach((track) => {
+        track.stop();
+        console.log("Stopped track:", track.label);
+      });
       setStream(null);
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    setShowCamera(false);
-  };
+    setCameraReady(false);
+  }, [stream]);
 
   // Capture photo
   const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || !cameraReady) {
+      console.log("Cannot capture: video or canvas not ready");
+      return;
+    }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -105,6 +137,8 @@ export default function Home() {
     // Set canvas size to video dimensions
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+
+    console.log("Capturing photo:", canvas.width, "x", canvas.height);
 
     // Draw video frame
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -119,6 +153,8 @@ export default function Home() {
     // Add to photos
     const newPhotos = [...photos, { dataUrl, timestamp: new Date() }];
     setPhotos(newPhotos);
+
+    console.log("Photo captured, total:", newPhotos.length);
 
     // If we have enough photos, move to sticker step
     if (newPhotos.length >= photosNeeded) {
@@ -147,8 +183,8 @@ export default function Home() {
     setStickers((prev) => [...prev, newSticker]);
   };
 
-  // Generate film strip with stickers
-  const generateFilmStrip = async () => {
+  // Generate preview (without stickers) for sticker placement step
+  const generatePreview = useCallback(async () => {
     if (photos.length === 0 || !filmStripCanvasRef.current) return;
 
     const canvas = filmStripCanvasRef.current;
@@ -195,14 +231,14 @@ export default function Home() {
     ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
     
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 16px 'Space Mono', monospace";
+    ctx.font = "bold 16px monospace";
     ctx.fillText("REC ● PLAY ▲ SP   LIVE CAM 01", margin + 15, margin + 35);
     
     // Date stamp in header
     const eventDate = photos[0].timestamp;
     const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
     ctx.fillStyle = "#ff9500";
-    ctx.font = "bold 24px 'Space Mono', monospace";
+    ctx.font = "bold 24px monospace";
     const dateText = `${monthYear} — ${eventText.toUpperCase() || "PARTY TIME"}`;
     ctx.fillText(dateText, margin + 15, margin + headerHeight - 25);
 
@@ -214,6 +250,7 @@ export default function Home() {
       
       await new Promise((resolve) => {
         img.onload = resolve;
+        img.onerror = resolve;
       });
 
       // Photo border
@@ -227,11 +264,9 @@ export default function Home() {
       let sx = 0, sy = 0, sw = img.width, sh = img.height;
       
       if (imgAspect > targetAspect) {
-        // Image is wider, crop sides
         sw = img.height * targetAspect;
         sx = (img.width - sw) / 2;
       } else {
-        // Image is taller, crop top/bottom
         sh = img.width / targetAspect;
         sy = (img.height - sh) / 2;
       }
@@ -249,13 +284,149 @@ export default function Home() {
       currentY += photoHeight + spacing;
     }
 
-    // Draw stickers on canvas
+    // Footer with decorative stickers
+    const footerY = currentY - spacing + dateHeight;
+    
+    // Load and draw footer stickers
+    const decorStickers = [
+      { src: "/images/sticker-star.png", x: margin + 30, y: footerY + 20, size: 60 },
+      { src: "/images/sticker-heart.png", x: margin + 480, y: footerY + 30, size: 50 },
+      { src: "/images/sticker-rainbow.png", x: margin + 420, y: footerY + 100, size: 70 },
+      { src: "/images/sticker-smiley.png", x: margin + 50, y: footerY + 110, size: 55 },
+    ];
+
+    for (const sticker of decorStickers) {
+      const img = new Image();
+      img.src = sticker.src;
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+      ctx.drawImage(img, sticker.x, sticker.y, sticker.size, sticker.size);
+    }
+
+    // Footer text
+    ctx.fillStyle = "#1a1a1a";
+    ctx.font = "bold 48px cursive";
+    ctx.fillText("MEMORIES", margin + 120, footerY + 80);
+    
+    ctx.font = "32px cursive";
+    ctx.fillStyle = "#666666";
+    ctx.fillText("Made with ♥", margin + 140, footerY + 130);
+
+    const dataUrl = canvas.toDataURL("image/png");
+    setPreviewDataUrl(dataUrl);
+  }, [photos, layout, eventText]);
+
+  // Generate final film strip with stickers
+  const generateFilmStrip = useCallback(async () => {
+    if (photos.length === 0 || !filmStripCanvasRef.current) return;
+
+    const canvas = filmStripCanvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const isSingle = layout === "single";
+    
+    // Canvas dimensions
+    const stripWidth = 600;
+    const photoWidth = 560;
+    const photoHeight = isSingle ? 560 : 400;
+    const margin = 20;
+    const headerHeight = 100;
+    const dateHeight = 60;
+    const footerHeight = 180;
+    const spacing = 10;
+    
+    const photoSectionHeight = isSingle 
+      ? photoHeight 
+      : photos.length * (photoHeight + spacing) - spacing;
+    
+    const totalHeight = headerHeight + photoSectionHeight + dateHeight + footerHeight + margin * 2;
+    
+    canvas.width = stripWidth;
+    canvas.height = totalHeight;
+
+    // White background
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, stripWidth, totalHeight);
+
+    // Film grain effect
+    ctx.fillStyle = "rgba(0, 0, 0, 0.03)";
+    for (let i = 0; i < 2000; i++) {
+      const x = Math.random() * stripWidth;
+      const y = Math.random() * totalHeight;
+      ctx.fillRect(x, y, 1, 1);
+    }
+
+    let currentY = margin + headerHeight;
+
+    // Header with retro elements
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
+    
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 16px monospace";
+    ctx.fillText("REC ● PLAY ▲ SP   LIVE CAM 01", margin + 15, margin + 35);
+    
+    // Date stamp in header
+    const eventDate = photos[0].timestamp;
+    const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
+    ctx.fillStyle = "#ff9500";
+    ctx.font = "bold 24px monospace";
+    const dateText = `${monthYear} — ${eventText.toUpperCase() || "PARTY TIME"}`;
+    ctx.fillText(dateText, margin + 15, margin + headerHeight - 25);
+
+    // Draw photos
+    for (let i = 0; i < photos.length; i++) {
+      const photo = photos[i];
+      const img = new Image();
+      img.src = photo.dataUrl;
+      
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+
+      // Photo border
+      ctx.fillStyle = "#f5f5f5";
+      ctx.fillRect(margin - 5, currentY - 5, photoWidth + 10, photoHeight + 10);
+      
+      // Draw photo (crop to fit)
+      const imgAspect = img.width / img.height;
+      const targetAspect = photoWidth / photoHeight;
+      
+      let sx = 0, sy = 0, sw = img.width, sh = img.height;
+      
+      if (imgAspect > targetAspect) {
+        sw = img.height * targetAspect;
+        sx = (img.width - sw) / 2;
+      } else {
+        sh = img.width / targetAspect;
+        sy = (img.height - sh) / 2;
+      }
+      
+      ctx.drawImage(img, sx, sy, sw, sh, margin, currentY, photoWidth, photoHeight);
+      
+      // Film grain on photo
+      ctx.fillStyle = "rgba(0, 0, 0, 0.04)";
+      for (let j = 0; j < 800; j++) {
+        const x = margin + Math.random() * photoWidth;
+        const y = currentY + Math.random() * photoHeight;
+        ctx.fillRect(x, y, 1, 1);
+      }
+
+      currentY += photoHeight + spacing;
+    }
+
+    // Draw user-placed stickers
     for (const sticker of stickers) {
       const img = new Image();
       img.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
       
       await new Promise((resolve) => {
         img.onload = resolve;
+        img.onerror = resolve;
       });
       
       const stickerSize = 80 * sticker.scale;
@@ -284,28 +455,24 @@ export default function Home() {
       img.src = sticker.src;
       await new Promise((resolve) => {
         img.onload = resolve;
+        img.onerror = resolve;
       });
       ctx.drawImage(img, sticker.x, sticker.y, sticker.size, sticker.size);
     }
 
     // Footer text
     ctx.fillStyle = "#1a1a1a";
-    ctx.font = "bold 48px 'Permanent Marker', cursive";
+    ctx.font = "bold 48px cursive";
     ctx.fillText("MEMORIES", margin + 120, footerY + 80);
     
-    ctx.font = "32px 'Permanent Marker', cursive";
+    ctx.font = "32px cursive";
     ctx.fillStyle = "#666666";
     ctx.fillText("Made with ♥", margin + 140, footerY + 130);
 
     const dataUrl = canvas.toDataURL("image/png");
     setFilmStripDataUrl(dataUrl);
     setFilmStripReady(true);
-    
-    // Generate share URL (in production, upload to server and get URL)
-    // For now, we'll use a data URL approach
-    const shareableUrl = `${window.location.origin}/share?data=${encodeURIComponent(dataUrl)}`;
-    setShareUrl(shareableUrl);
-  };
+  }, [photos, layout, eventText, stickers]);
 
   // Download film strip
   const downloadFilmStrip = () => {
@@ -326,8 +493,9 @@ export default function Home() {
     setEventText("");
     setFilmStripReady(false);
     setFilmStripDataUrl("");
-    setShareUrl("");
+    setPreviewDataUrl("");
     setStep("layout");
+    setCameraError("");
     stopCamera();
   };
 
@@ -335,7 +503,6 @@ export default function Home() {
   const selectLayout = (type: LayoutType) => {
     setLayout(type);
     setStep("camera");
-    startCamera();
   };
 
   // Move to final step
@@ -343,6 +510,20 @@ export default function Home() {
     setStep("final");
     generateFilmStrip();
   };
+
+  // Start camera when entering camera step
+  useEffect(() => {
+    if (step === "camera") {
+      startCamera();
+    }
+  }, [step]);
+
+  // Generate preview when entering stickers step
+  useEffect(() => {
+    if (step === "stickers" && photos.length > 0) {
+      generatePreview();
+    }
+  }, [step, photos, generatePreview]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -369,7 +550,7 @@ export default function Home() {
       <div className="fixed inset-0 -z-10 film-grain" />
 
       {/* Main content */}
-      <div className="container mx-auto px-4 py-6 max-w-2xl">
+      <div className="container mx-auto px-4 py-6 max-w-lg">
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="font-display text-4xl md:text-5xl text-foreground mb-2 drop-shadow-lg">
@@ -415,17 +596,40 @@ export default function Home() {
         )}
 
         {/* Step 2: Camera */}
-        {step === "camera" && showCamera && (
+        {step === "camera" && (
           <div className="space-y-4">
             {/* Video preview */}
-            <div className="relative bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white">
+            <div className="relative bg-black rounded-2xl overflow-hidden shadow-2xl border-4 border-white aspect-[4/3]">
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-auto"
+                className="w-full h-full object-cover"
+                style={{ transform: "scaleX(-1)" }}
               />
+
+              {/* Camera not ready overlay */}
+              {!cameraReady && !cameraError && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                  <div className="text-center text-white">
+                    <div className="animate-spin w-8 h-8 border-4 border-white border-t-transparent rounded-full mx-auto mb-2" />
+                    <p className="font-mono text-sm">Starting camera...</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Camera error */}
+              {cameraError && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                  <div className="text-center text-white p-4">
+                    <p className="font-mono text-sm text-red-400 mb-4">{cameraError}</p>
+                    <Button onClick={startCamera} variant="outline" size="sm">
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {/* Flash effect */}
               {flash && (
@@ -459,6 +663,7 @@ export default function Home() {
             <div className="flex gap-3">
               <Button
                 onClick={capturePhoto}
+                disabled={!cameraReady}
                 size="lg"
                 className="flex-1 font-mono text-lg py-6 rounded-xl"
               >
@@ -491,10 +696,17 @@ export default function Home() {
                 className="relative bg-white rounded-xl overflow-hidden cursor-crosshair"
                 onClick={addSticker}
               >
-                <canvas
-                  ref={filmStripCanvasRef}
-                  className="w-full h-auto max-h-[500px] object-contain"
-                />
+                {previewDataUrl ? (
+                  <img
+                    src={previewDataUrl}
+                    alt="Preview"
+                    className="w-full h-auto"
+                  />
+                ) : (
+                  <div className="w-full aspect-[3/4] flex items-center justify-center">
+                    <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+                  </div>
+                )}
                 
                 {/* Sticker overlays */}
                 {stickers.map((sticker) => (
@@ -566,7 +778,7 @@ export default function Home() {
         )}
 
         {/* Step 4: Final Result with QR */}
-        {step === "final" && filmStripReady && (
+        {step === "final" && (
           <div className="space-y-4">
             <div className="bg-card/90 backdrop-blur-sm rounded-2xl p-6 shadow-2xl border-4 border-white">
               <h2 className="font-display text-3xl text-foreground mb-4 text-center">
@@ -575,32 +787,47 @@ export default function Home() {
 
               {/* Film strip preview */}
               <div className="bg-white rounded-xl p-4 mb-6 max-h-[400px] overflow-y-auto">
-                <img
-                  src={filmStripDataUrl}
-                  alt="Film strip"
-                  className="w-full h-auto"
-                />
+                {filmStripReady ? (
+                  <img
+                    src={filmStripDataUrl}
+                    alt="Film strip"
+                    className="w-full h-auto"
+                  />
+                ) : (
+                  <div className="w-full aspect-[3/4] flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-2" />
+                      <p className="font-mono text-sm text-muted-foreground">Generating...</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* QR Code */}
-              <div className="bg-white rounded-xl p-6 mb-6 text-center">
-                <p className="font-mono text-sm font-bold text-foreground mb-3">
-                  SCAN TO VIEW & DOWNLOAD
-                </p>
-                <div className="inline-block p-4 bg-white rounded-lg">
-                  <QRCodeSVG
-                    value={shareUrl}
-                    size={200}
-                    level="H"
-                    includeMargin={true}
-                  />
+              {filmStripReady && (
+                <div className="bg-white rounded-xl p-6 mb-6 text-center">
+                  <p className="font-mono text-sm font-bold text-foreground mb-3">
+                    SCAN TO VIEW & DOWNLOAD
+                  </p>
+                  <div className="inline-block p-4 bg-white rounded-lg border-2 border-gray-200">
+                    <QRCodeSVG
+                      value={window.location.origin}
+                      size={180}
+                      level="M"
+                      includeMargin={false}
+                    />
+                  </div>
+                  <p className="font-mono text-xs text-muted-foreground mt-3">
+                    Or use the download button below
+                  </p>
                 </div>
-              </div>
+              )}
 
               {/* Actions */}
               <div className="flex gap-3">
                 <Button
                   onClick={downloadFilmStrip}
+                  disabled={!filmStripReady}
                   size="lg"
                   className="flex-1 font-mono text-lg py-6 rounded-xl"
                 >
@@ -621,8 +848,9 @@ export default function Home() {
           </div>
         )}
 
-        {/* Hidden canvas for photo capture */}
+        {/* Hidden canvases */}
         <canvas ref={canvasRef} className="hidden" />
+        <canvas ref={filmStripCanvasRef} className="hidden" />
       </div>
     </div>
   );
