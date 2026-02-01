@@ -6,8 +6,11 @@
 
 
 import { Input } from "@/components/ui/input";
-import { Camera, Download, RotateCcw, RefreshCw, ZoomIn, ZoomOut, X, Check, Trash2 } from "lucide-react";
+import { Camera, Download, RotateCcw, RefreshCw, ZoomIn, ZoomOut, X, Check, Trash2, Share2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 
 
 type LayoutType = "single" | "strip" | null;
@@ -586,15 +589,69 @@ export default function Home() {
 
   }, [photos, layout, eventText, footerText, stickers]);
 
-  // Download
-  const downloadFilmStrip = () => {
+  // Check if running in native app
+  const isNative = Capacitor.isNativePlatform();
+
+  // Save to gallery (native) or download (web)
+  const downloadFilmStrip = async () => {
     if (!filmStripDataUrl) return;
     
-    const link = document.createElement("a");
     const timestamp = new Date().toISOString().slice(0, 10);
-    link.download = `cybershot-${timestamp}.png`;
-    link.href = filmStripDataUrl;
-    link.click();
+    const fileName = `cybershot-${timestamp}.png`;
+    
+    if (isNative) {
+      try {
+        // Convert data URL to base64
+        const base64Data = filmStripDataUrl.split(',')[1];
+        
+        // Save to device gallery
+        const result = await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Documents,
+        });
+        
+        // Show success feedback
+        alert('Photo saved to gallery!');
+        console.log('Saved to:', result.uri);
+      } catch (error) {
+        console.error('Error saving photo:', error);
+        alert('Failed to save photo. Please try again.');
+      }
+    } else {
+      // Web fallback - download file
+      const link = document.createElement("a");
+      link.download = fileName;
+      link.href = filmStripDataUrl;
+      link.click();
+    }
+  };
+
+  // Share photo (native only)
+  const sharePhoto = async () => {
+    if (!filmStripDataUrl || !isNative) return;
+    
+    try {
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const fileName = `cybershot-${timestamp}.png`;
+      const base64Data = filmStripDataUrl.split(',')[1];
+      
+      // Save temporarily for sharing
+      const result = await Filesystem.writeFile({
+        path: fileName,
+        data: base64Data,
+        directory: Directory.Cache,
+      });
+      
+      await Share.share({
+        title: 'Cyber-shot Photo',
+        text: 'Check out my photo from Cyber-shot Booth!',
+        url: result.uri,
+        dialogTitle: 'Share your photo',
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
   };
 
   // Reset
@@ -1070,8 +1127,17 @@ export default function Home() {
                 className="shutter-btn flex-1 py-3 rounded-lg font-display text-white text-sm flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <Download className="w-5 h-5" />
-                DOWNLOAD
+                {isNative ? 'SAVE' : 'DOWNLOAD'}
               </button>
+              {isNative && (
+                <button
+                  onClick={sharePhoto}
+                  disabled={!filmStripReady}
+                  className="camera-btn px-4 py-3 rounded-lg flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Share2 className="w-5 h-5" />
+                </button>
+              )}
               <button
                 onClick={reset}
                 className="camera-btn px-4 py-3 rounded-lg flex items-center gap-2"
