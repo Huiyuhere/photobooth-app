@@ -70,6 +70,8 @@ export default function Home() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [stickerPage, setStickerPage] = useState(0);
   const [cameraFilter, setCameraFilter] = useState<CameraFilter>("original");
+  const [isAutoCapturing, setIsAutoCapturing] = useState(false);
+  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
 
   const photosNeeded = layout === "single" ? 1 : 4;
   const stickersPerPage = 7;
@@ -131,21 +133,82 @@ export default function Home() {
     await startCamera(newFacing);
   };
 
-  // Capture photo with countdown
+  // Start capture - manual for single, auto for strip
   const startCapture = () => {
-    setCountdown(3);
+    if (layout === "strip") {
+      // Start automatic sequential capture for strip mode
+      setIsAutoCapturing(true);
+      setCurrentPhotoIndex(0);
+      setCountdown(3);
+    } else {
+      // Single photo - just countdown and capture
+      setCountdown(3);
+    }
   };
 
+  // Handle countdown and auto-capture sequence
   useEffect(() => {
     if (countdown === null) return;
+    
     if (countdown > 0) {
       const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
       return () => clearTimeout(timer);
     } else {
-      capturePhoto();
-      setCountdown(null);
+      // Countdown reached 0, capture photo
+      capturePhotoForSequence();
     }
   }, [countdown]);
+
+  // Capture photo and handle sequence
+  const capturePhotoForSequence = () => {
+    if (!videoRef.current || !canvasRef.current || !cameraReady) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    if (facingMode === "user") {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    if (cameraFilter === "retro") {
+      applyRetroFilter(ctx, canvas.width, canvas.height);
+    }
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    
+    setFlash(true);
+    setTimeout(() => setFlash(false), 150);
+
+    const newPhotos = [...photos, { dataUrl, timestamp: new Date() }];
+    setPhotos(newPhotos);
+    
+    const nextIndex = currentPhotoIndex + 1;
+    setCurrentPhotoIndex(nextIndex);
+
+    if (newPhotos.length >= photosNeeded) {
+      // All photos captured
+      setIsAutoCapturing(false);
+      setCountdown(null);
+      stopCamera();
+      setStep("stickers");
+    } else if (isAutoCapturing && layout === "strip") {
+      // More photos needed in strip mode - start next countdown after brief pause
+      setTimeout(() => {
+        setCountdown(3);
+      }, 800); // Brief pause between photos
+    } else {
+      setCountdown(null);
+    }
+  };
 
   // Apply retro filter to image data
   const applyRetroFilter = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
@@ -191,47 +254,7 @@ export default function Home() {
     }
   };
 
-  // Capture photo
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current || !cameraReady) return;
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    // Mirror for front camera
-    if (facingMode === "user") {
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
-    
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    // Reset transform before applying filter
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    
-    // Apply retro filter if selected
-    if (cameraFilter === "retro") {
-      applyRetroFilter(ctx, canvas.width, canvas.height);
-    }
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    
-    setFlash(true);
-    setTimeout(() => setFlash(false), 150);
-
-    const newPhotos = [...photos, { dataUrl, timestamp: new Date() }];
-    setPhotos(newPhotos);
-
-    if (newPhotos.length >= photosNeeded) {
-      stopCamera();
-      setStep("stickers");
-    }
-  };
 
   // Add sticker
   const addSticker = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
@@ -589,6 +612,9 @@ export default function Home() {
     setSelectedSticker(null);
     setSelectedPlacedSticker(null);
     setCameraFilter("original");
+    setIsAutoCapturing(false);
+    setCurrentPhotoIndex(0);
+    setCountdown(null);
     stopCamera();
   };
 
@@ -724,9 +750,16 @@ export default function Home() {
               {/* Countdown */}
               {countdown !== null && (
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="font-display text-9xl text-white drop-shadow-2xl animate-pulse">
-                    {countdown || "📸"}
-                  </span>
+                  <div className="text-center">
+                    {layout === "strip" && (
+                      <p className="font-lcd text-2xl lcd-text-orange mb-2">
+                        PHOTO {photos.length + 1} OF 4
+                      </p>
+                    )}
+                    <span className="font-display text-9xl text-white drop-shadow-2xl animate-pulse">
+                      {countdown || "📸"}
+                    </span>
+                  </div>
                 </div>
               )}
 
@@ -798,7 +831,8 @@ export default function Home() {
               {/* Cancel */}
               <button
                 onClick={reset}
-                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center"
+                disabled={isAutoCapturing}
+                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center disabled:opacity-30"
               >
                 <X className="w-6 h-6 text-gray-700" />
               </button>
@@ -806,16 +840,21 @@ export default function Home() {
               {/* Shutter */}
               <button
                 onClick={startCapture}
-                disabled={!cameraReady || countdown !== null}
+                disabled={!cameraReady || countdown !== null || isAutoCapturing}
                 className="shutter-btn w-20 h-20 rounded-full flex items-center justify-center disabled:opacity-50"
               >
-                <div className="w-16 h-16 rounded-full border-4 border-white/30" />
+                <div className="w-16 h-16 rounded-full border-4 border-white/30 flex items-center justify-center">
+                  {layout === "strip" && !isAutoCapturing && (
+                    <span className="font-mono text-xs text-white/70">AUTO</span>
+                  )}
+                </div>
               </button>
 
               {/* Flip camera */}
               <button
                 onClick={toggleCamera}
-                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center"
+                disabled={isAutoCapturing}
+                className="camera-btn w-14 h-14 rounded-full flex items-center justify-center disabled:opacity-30"
               >
                 <RefreshCw className="w-6 h-6 text-gray-700" />
               </button>
