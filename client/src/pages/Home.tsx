@@ -1,4 +1,4 @@
-/**
+/*
  * Sony Cyber-shot Style Photobooth
  * Design: Retro digital camera aesthetic inspired by Sony Cyber-shot
  * Features: Full-screen camera, front/back toggle, draggable stickers, QR sharing
@@ -6,7 +6,7 @@
 
 
 import { Input } from "@/components/ui/input";
-import { Camera, Download, RotateCcw, RefreshCw, ZoomIn, ZoomOut, X, Check, Trash2, Share2 } from "lucide-react";
+import { Camera, Download, RotateCcw, RefreshCw, ZoomIn, ZoomOut, X, Check, Trash2, Share2, Printer } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
@@ -52,70 +52,47 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const filmStripCanvasRef = useRef<HTMLCanvasElement>(null);
-  const previewContainerRef = useRef<HTMLDivElement>(null);
-  
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const [step, setStep] = useState<"layout" | "camera" | "stickers" | "final">("layout");
   const [layout, setLayout] = useState<LayoutType>(null);
   const [photos, setPhotos] = useState<CapturedPhoto[]>([]);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<FacingMode>("user");
+  const [cameraError, setCameraError] = useState("");
+  const [countdown, setCountdown] = useState<number | null>(null);
   const [stickers, setStickers] = useState<StickerPosition[]>([]);
   const [selectedSticker, setSelectedSticker] = useState<string | null>(null);
   const [selectedPlacedSticker, setSelectedPlacedSticker] = useState<string | null>(null);
+  const [previewDataUrl, setPreviewDataUrl] = useState("");
+  const [filmStripDataUrl, setFilmStripDataUrl] = useState("");
+  const [filmStripReady, setFilmStripReady] = useState(false);
   const [eventText, setEventText] = useState("");
   const [footerText, setFooterText] = useState("");
-  const [cameraReady, setCameraReady] = useState(false);
-  const [flash, setFlash] = useState(false);
-  const [filmStripReady, setFilmStripReady] = useState(false);
-  const [filmStripDataUrl, setFilmStripDataUrl] = useState("");
-  const [previewDataUrl, setPreviewDataUrl] = useState("");
-  const [step, setStep] = useState<"layout" | "camera" | "stickers" | "final">("layout");
-  const [cameraError, setCameraError] = useState("");
-  const [facingMode, setFacingMode] = useState<FacingMode>("user");
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [stickerPage, setStickerPage] = useState(0);
   const [cameraFilter, setCameraFilter] = useState<CameraFilter>("original");
   const [isAutoCapturing, setIsAutoCapturing] = useState(false);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
 
-  const photosNeeded = layout === "single" ? 1 : 4;
-  const stickersPerPage = 7;
-  const totalStickerPages = Math.ceil(STICKERS.length / stickersPerPage);
-
-  // Initialize camera
-  const startCamera = useCallback(async (facing: FacingMode = facingMode) => {
+  // Start camera
+  const startCamera = useCallback(async () => {
     setCameraError("");
-    setCameraReady(false);
-    
     try {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-
-      const constraints = {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: facing,
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 }
+          facingMode: facingMode,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
         },
-        audio: false,
-      };
-
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      });
       setStream(mediaStream);
-      
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        videoRef.current.onloadedmetadata = () => {
-          if (videoRef.current) {
-            videoRef.current.play()
-              .then(() => setCameraReady(true))
-              .catch((err) => setCameraError("Failed to start video: " + err.message));
-          }
-        };
       }
-    } catch (err: any) {
-      setCameraError(err.message || "Camera access denied");
+    } catch (error) {
+      console.error("Camera error:", error);
+      setCameraError("Unable to access camera. Please check permissions.");
     }
-  }, [stream, facingMode]);
+  }, [facingMode]);
 
   // Stop camera
   const stopCamera = useCallback(() => {
@@ -123,245 +100,95 @@ export default function Home() {
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraReady(false);
   }, [stream]);
 
   // Toggle camera
-  const toggleCamera = async () => {
-    const newFacing = facingMode === "user" ? "environment" : "user";
-    setFacingMode(newFacing);
-    await startCamera(newFacing);
+  const toggleCamera = () => {
+    stopCamera();
+    setFacingMode(facingMode === "user" ? "environment" : "user");
   };
 
-  // Start capture - manual for single, auto for strip
-  const startCapture = () => {
-    if (layout === "strip") {
-      // Start automatic sequential capture for strip mode
-      setIsAutoCapturing(true);
-      setCurrentPhotoIndex(0);
-      setCountdown(3);
-    } else {
-      // Single photo - just countdown and capture
-      setCountdown(3);
+  // Apply retro filter
+  const applyRetroFilter = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    // Warm color overlay
+    ctx.fillStyle = "rgba(255, 200, 100, 0.08)";
+    ctx.fillRect(0, 0, width, height);
+
+    // Vignette effect
+    const gradient = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height));
+    gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0.3)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    // Film grain
+    for (let i = 0; i < 500; i++) {
+      const x = Math.random() * width;
+      const y = Math.random() * height;
+      const size = Math.random() * 2;
+      ctx.fillStyle = `rgba(0, 0, 0, ${Math.random() * 0.1})`;
+      ctx.fillRect(x, y, size, size);
     }
   };
 
-  // Handle countdown and auto-capture sequence
-  useEffect(() => {
-    if (countdown === null) return;
-    
-    if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    } else {
-      // Countdown reached 0, capture photo
-      capturePhotoForSequence();
-    }
-  }, [countdown]);
+  // Capture photo
+  const capturePhoto = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current) return;
 
-  // Capture photo and handle sequence
-  const capturePhotoForSequence = () => {
-    if (!videoRef.current || !canvasRef.current || !cameraReady) return;
-
-    const video = videoRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
 
-    if (facingMode === "user") {
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
-    
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    
+    ctx.drawImage(videoRef.current, 0, 0);
+
     if (cameraFilter === "retro") {
       applyRetroFilter(ctx, canvas.width, canvas.height);
     }
 
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-    
-    setFlash(true);
-    setTimeout(() => setFlash(false), 150);
+    const dataUrl = canvas.toDataURL("image/png");
+    setPhotos((prev) => [...prev, { dataUrl, timestamp: new Date() }]);
+  }, [cameraFilter]);
 
-    const newPhotos = [...photos, { dataUrl, timestamp: new Date() }];
-    setPhotos(newPhotos);
-    
-    const nextIndex = currentPhotoIndex + 1;
-    setCurrentPhotoIndex(nextIndex);
+  // Auto capture for strip mode
+  useEffect(() => {
+    if (!isAutoCapturing || !layout || layout !== "strip") return;
 
-    if (newPhotos.length >= photosNeeded) {
-      // All photos captured
+    const captureSequence = async () => {
+      for (let i = 0; i < 4; i++) {
+        setCurrentPhotoIndex(i);
+
+        // Countdown
+        for (let j = 3; j > 0; j--) {
+          setCountdown(j);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
+        setCountdown(null);
+        await capturePhoto();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
       setIsAutoCapturing(false);
-      setCountdown(null);
-      stopCamera();
+      setCurrentPhotoIndex(0);
       setStep("stickers");
-    } else if (isAutoCapturing && layout === "strip") {
-      // More photos needed in strip mode - start next countdown after brief pause
-      setTimeout(() => {
-        setCountdown(3);
-      }, 800); // Brief pause between photos
-    } else {
-      setCountdown(null);
-    }
-  };
-
-  // Apply retro filter to image data
-  const applyRetroFilter = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    const imageData = ctx.getImageData(0, 0, width, height);
-    const data = imageData.data;
-    
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      
-      // Warm sepia-like tone with slight desaturation
-      data[i] = Math.min(255, r * 1.1 + 20);     // Red boost
-      data[i + 1] = Math.min(255, g * 0.95 + 10); // Slight green reduction
-      data[i + 2] = Math.min(255, b * 0.85);      // Blue reduction for warmth
-      
-      // Add slight contrast
-      data[i] = Math.min(255, Math.max(0, (data[i] - 128) * 1.1 + 128));
-      data[i + 1] = Math.min(255, Math.max(0, (data[i + 1] - 128) * 1.1 + 128));
-      data[i + 2] = Math.min(255, Math.max(0, (data[i + 2] - 128) * 1.1 + 128));
-    }
-    
-    ctx.putImageData(imageData, 0, 0);
-    
-    // Add vignette effect
-    const gradient = ctx.createRadialGradient(
-      width / 2, height / 2, height * 0.3,
-      width / 2, height / 2, height * 0.8
-    );
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-    
-    // Add film grain
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.03)';
-    for (let j = 0; j < 3000; j++) {
-      ctx.fillRect(Math.random() * width, Math.random() * height, 1, 1);
-    }
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
-    for (let j = 0; j < 2000; j++) {
-      ctx.fillRect(Math.random() * width, Math.random() * height, 1, 1);
-    }
-  };
-
-
-
-  // Add sticker
-  const addSticker = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
-    if (!selectedSticker || !previewContainerRef.current) return;
-    
-    const rect = previewContainerRef.current.getBoundingClientRect();
-    let clientX: number, clientY: number;
-    
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-    
-    const x = ((clientX - rect.left) / rect.width) * 100;
-    const y = ((clientY - rect.top) / rect.height) * 100;
-    
-    const newSticker: StickerPosition = {
-      id: Date.now().toString(),
-      type: selectedSticker,
-      x,
-      y,
-      rotation: Math.random() * 20 - 10,
-      scale: 1,
     };
-    
-    setStickers((prev) => [...prev, newSticker]);
-    setSelectedPlacedSticker(newSticker.id);
-    setSelectedSticker(null);
-  };
 
-  // Update sticker position
-  const updateStickerPosition = (id: string, updates: Partial<StickerPosition>) => {
-    setStickers((prev) => prev.map((s) => s.id === id ? { ...s, ...updates } : s));
-  };
-
-  // Delete sticker
-  const deleteSticker = (id: string) => {
-    setStickers((prev) => prev.filter((s) => s.id !== id));
-    setSelectedPlacedSticker(null);
-  };
-
-  // Resize sticker
-  const resizeSticker = (id: string, delta: number) => {
-    setStickers((prev) => prev.map((s) => {
-      if (s.id === id) {
-        const newScale = Math.max(0.3, Math.min(2.5, s.scale + delta));
-        return { ...s, scale: newScale };
-      }
-      return s;
-    }));
-  };
-
-  // Handle sticker drag
-  const handleStickerDrag = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>, stickerId: string) => {
-    e.stopPropagation();
-    if (!previewContainerRef.current) return;
-    
-    setSelectedPlacedSticker(stickerId);
-    
-    const rect = previewContainerRef.current.getBoundingClientRect();
-    
-    const handleMove = (moveEvent: MouseEvent | TouchEvent) => {
-      let clientX: number, clientY: number;
-      
-      if ('touches' in moveEvent) {
-        clientX = moveEvent.touches[0].clientX;
-        clientY = moveEvent.touches[0].clientY;
-      } else {
-        clientX = moveEvent.clientX;
-        clientY = moveEvent.clientY;
-      }
-      
-      const x = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
-      const y = Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100));
-      
-      updateStickerPosition(stickerId, { x, y });
-    };
-    
-    const handleEnd = () => {
-      document.removeEventListener('mousemove', handleMove);
-      document.removeEventListener('mouseup', handleEnd);
-      document.removeEventListener('touchmove', handleMove);
-      document.removeEventListener('touchend', handleEnd);
-    };
-    
-    document.addEventListener('mousemove', handleMove);
-    document.addEventListener('mouseup', handleEnd);
-    document.addEventListener('touchmove', handleMove);
-    document.addEventListener('touchend', handleEnd);
-  };
+    captureSequence();
+  }, [isAutoCapturing, layout, capturePhoto]);
 
   // Generate preview
   const generatePreview = useCallback(async () => {
-    if (photos.length === 0 || !filmStripCanvasRef.current) return;
+    if (photos.length === 0 || !previewCanvasRef.current) return;
 
-    const canvas = filmStripCanvasRef.current;
+    const canvas = previewCanvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     const isSingle = layout === "single";
-    
+
     const stripWidth = 600;
     const photoWidth = 560;
     const photoHeight = isSingle ? 560 : 400;
@@ -369,21 +196,17 @@ export default function Home() {
     const headerHeight = 100;
     const footerHeight = 100;
     const spacing = 10;
-    
-    const photoSectionHeight = isSingle 
-      ? photoHeight 
-      : photos.length * (photoHeight + spacing) - spacing;
-    
+
+    const photoSectionHeight = isSingle ? photoHeight : photos.length * (photoHeight + spacing) - spacing;
+
     const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
-    
+
     canvas.width = stripWidth;
     canvas.height = totalHeight;
 
-    // White background
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, stripWidth, totalHeight);
 
-    // Film grain
     ctx.fillStyle = "rgba(0, 0, 0, 0.02)";
     for (let i = 0; i < 1500; i++) {
       ctx.fillRect(Math.random() * stripWidth, Math.random() * totalHeight, 1, 1);
@@ -394,11 +217,11 @@ export default function Home() {
     // Header
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
-    
+
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 14px 'Share Tech Mono', monospace";
     ctx.fillText("REC ● PLAY ▲ SP   CYBER-SHOT", margin + 15, margin + 30);
-    
+
     const eventDate = photos[0].timestamp;
     const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
     ctx.fillStyle = "#ff9900";
@@ -410,51 +233,36 @@ export default function Home() {
       const photo = photos[i];
       const img = new Image();
       img.src = photo.dataUrl;
-      
+
       await new Promise((resolve) => {
         img.onload = resolve;
         img.onerror = resolve;
       });
 
-      ctx.fillStyle = "#f0f0f0";
-      ctx.fillRect(margin - 5, currentY - 5, photoWidth + 10, photoHeight + 10);
-      
-      const imgAspect = img.width / img.height;
-      const targetAspect = photoWidth / photoHeight;
-      
-      let sx = 0, sy = 0, sw = img.width, sh = img.height;
-      
-      if (imgAspect > targetAspect) {
-        sw = img.height * targetAspect;
-        sx = (img.width - sw) / 2;
-      } else {
-        sh = img.width / targetAspect;
-        sy = (img.height - sh) / 2;
-      }
-      
-      ctx.drawImage(img, sx, sy, sw, sh, margin, currentY, photoWidth, photoHeight);
-      
-      ctx.fillStyle = "rgba(0, 0, 0, 0.03)";
-      for (let j = 0; j < 500; j++) {
-        ctx.fillRect(margin + Math.random() * photoWidth, currentY + Math.random() * photoHeight, 1, 1);
-      }
+      const photoX = margin + (photoWidth - 560) / 2;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(photoX - 5, currentY - 5, 560 + 10, photoHeight + 10);
 
+      ctx.drawImage(img, photoX, currentY, 560, photoHeight);
       currentY += photoHeight + spacing;
     }
 
-    // Footer with custom text
-    const footerY = currentY - spacing;
+    // Footer
     ctx.fillStyle = "#1a1a1a";
-    ctx.font = "bold 28px 'Orbitron', sans-serif";
-    const footerTextDisplay = footerText || "CYBER-SHOT";
-    const textWidth = ctx.measureText(footerTextDisplay.toUpperCase()).width;
-    ctx.fillText(footerTextDisplay.toUpperCase(), (stripWidth - textWidth) / 2, footerY + 50);
-    
-    ctx.font = "16px 'Share Tech Mono', monospace";
+    ctx.fillRect(margin, currentY, photoWidth, footerHeight - 10);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 14px 'Share Tech Mono', monospace";
+    ctx.fillText("CYBER-SHOT BOOTH", margin + 15, currentY + 30);
+
+    ctx.fillStyle = "#ff9900";
+    ctx.font = "bold 18px 'Orbitron', sans-serif";
+    ctx.fillText(footerText.toUpperCase() || "MEMORIES MADE", margin + 15, currentY + 65);
+
     ctx.fillStyle = "#666666";
     const dateStr = eventDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
     const dateWidth = ctx.measureText(dateStr).width;
-    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, footerY + 80);
+    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, currentY + 80);
 
     setPreviewDataUrl(canvas.toDataURL("image/png"));
   }, [photos, layout, eventText, footerText]);
@@ -468,7 +276,7 @@ export default function Home() {
     if (!ctx) return;
 
     const isSingle = layout === "single";
-    
+
     const stripWidth = 600;
     const photoWidth = 560;
     const photoHeight = isSingle ? 560 : 400;
@@ -476,13 +284,11 @@ export default function Home() {
     const headerHeight = 100;
     const footerHeight = 100;
     const spacing = 10;
-    
-    const photoSectionHeight = isSingle 
-      ? photoHeight 
-      : photos.length * (photoHeight + spacing) - spacing;
-    
+
+    const photoSectionHeight = isSingle ? photoHeight : photos.length * (photoHeight + spacing) - spacing;
+
     const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
-    
+
     canvas.width = stripWidth;
     canvas.height = totalHeight;
 
@@ -499,11 +305,11 @@ export default function Home() {
     // Header
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
-    
+
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 14px 'Share Tech Mono', monospace";
     ctx.fillText("REC ● PLAY ▲ SP   CYBER-SHOT", margin + 15, margin + 30);
-    
+
     const eventDate = photos[0].timestamp;
     const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
     ctx.fillStyle = "#ff9900";
@@ -515,78 +321,60 @@ export default function Home() {
       const photo = photos[i];
       const img = new Image();
       img.src = photo.dataUrl;
-      
+
       await new Promise((resolve) => {
         img.onload = resolve;
         img.onerror = resolve;
       });
 
-      ctx.fillStyle = "#f0f0f0";
-      ctx.fillRect(margin - 5, currentY - 5, photoWidth + 10, photoHeight + 10);
-      
-      const imgAspect = img.width / img.height;
-      const targetAspect = photoWidth / photoHeight;
-      
-      let sx = 0, sy = 0, sw = img.width, sh = img.height;
-      
-      if (imgAspect > targetAspect) {
-        sw = img.height * targetAspect;
-        sx = (img.width - sw) / 2;
-      } else {
-        sh = img.width / targetAspect;
-        sy = (img.height - sh) / 2;
-      }
-      
-      ctx.drawImage(img, sx, sy, sw, sh, margin, currentY, photoWidth, photoHeight);
-      
-      ctx.fillStyle = "rgba(0, 0, 0, 0.03)";
-      for (let j = 0; j < 500; j++) {
-        ctx.fillRect(margin + Math.random() * photoWidth, currentY + Math.random() * photoHeight, 1, 1);
-      }
+      const photoX = margin + (photoWidth - 560) / 2;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(photoX - 5, currentY - 5, 560 + 10, photoHeight + 10);
 
+      ctx.drawImage(img, photoX, currentY, 560, photoHeight);
       currentY += photoHeight + spacing;
     }
 
-    // Draw stickers
-    for (const sticker of stickers) {
-      const img = new Image();
-      img.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
-      
-      await new Promise((resolve) => {
-        img.onload = resolve;
-        img.onerror = resolve;
-      });
-      
-      const stickerSize = 80 * sticker.scale;
-      const x = (sticker.x / 100) * stripWidth - stickerSize / 2;
-      const y = (sticker.y / 100) * totalHeight - stickerSize / 2;
-      
-      ctx.save();
-      ctx.translate(x + stickerSize / 2, y + stickerSize / 2);
-      ctx.rotate((sticker.rotation * Math.PI) / 180);
-      ctx.drawImage(img, -stickerSize / 2, -stickerSize / 2, stickerSize, stickerSize);
-      ctx.restore();
-    }
-
     // Footer
-    const footerY = currentY - spacing;
     ctx.fillStyle = "#1a1a1a";
-    ctx.font = "bold 28px 'Orbitron', sans-serif";
-    const footerTextDisplay = footerText || "CYBER-SHOT";
-    const textWidth = ctx.measureText(footerTextDisplay.toUpperCase()).width;
-    ctx.fillText(footerTextDisplay.toUpperCase(), (stripWidth - textWidth) / 2, footerY + 50);
-    
-    ctx.font = "16px 'Share Tech Mono', monospace";
+    ctx.fillRect(margin, currentY, photoWidth, footerHeight - 10);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 14px 'Share Tech Mono', monospace";
+    ctx.fillText("CYBER-SHOT BOOTH", margin + 15, currentY + 30);
+
+    ctx.fillStyle = "#ff9900";
+    ctx.font = "bold 18px 'Orbitron', sans-serif";
+    ctx.fillText(footerText.toUpperCase() || "MEMORIES MADE", margin + 15, currentY + 65);
+
     ctx.fillStyle = "#666666";
     const dateStr = eventDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
     const dateWidth = ctx.measureText(dateStr).width;
-    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, footerY + 80);
+    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, currentY + 80);
+
+    // Draw stickers
+    for (const sticker of stickers) {
+      const stickerImg = new Image();
+      stickerImg.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
+
+      await new Promise((resolve) => {
+        stickerImg.onload = resolve;
+        stickerImg.onerror = resolve;
+      });
+
+      const stickerWidth = 80 * sticker.scale;
+      const stickerHeight = 80 * sticker.scale;
+
+      ctx.save();
+      ctx.translate(sticker.x + stickerWidth / 2, sticker.y + stickerHeight / 2);
+      ctx.rotate((sticker.rotation * Math.PI) / 180);
+      ctx.drawImage(stickerImg, -stickerWidth / 2, -stickerHeight / 2, stickerWidth, stickerHeight);
+      ctx.restore();
+    }
 
     const dataUrl = canvas.toDataURL("image/png");
     setFilmStripDataUrl(dataUrl);
     setFilmStripReady(true);
-    
-
   }, [photos, layout, eventText, footerText, stickers]);
 
   // Check if running in native app
@@ -595,62 +383,90 @@ export default function Home() {
   // Save to gallery (native) or download (web)
   const downloadFilmStrip = async () => {
     if (!filmStripDataUrl) return;
-    
+
     const timestamp = new Date().toISOString().slice(0, 10);
     const fileName = `cybershot-${timestamp}.png`;
-    
+
     if (isNative) {
       try {
         // Convert data URL to base64
-        const base64Data = filmStripDataUrl.split(',')[1];
-        
+        const base64Data = filmStripDataUrl.split(",")[1];
+
         // Save to device gallery
         const result = await Filesystem.writeFile({
           path: fileName,
           data: base64Data,
           directory: Directory.Documents,
         });
-        
+
         // Show success feedback
-        alert('Photo saved to gallery!');
-        console.log('Saved to:', result.uri);
+        alert("Photo saved to gallery!");
+        console.log("Saved to:", result.uri);
       } catch (error) {
-        console.error('Error saving photo:', error);
-        alert('Failed to save photo. Please try again.');
+        console.error("Error saving photo:", error);
+        alert("Failed to save photo. Please try again.");
       }
     } else {
-      // Web fallback - download file
-      const link = document.createElement("a");
-      link.download = fileName;
-      link.href = filmStripDataUrl;
-      link.click();
+      // Web fallback - improved download for mobile and desktop
+      try {
+        const blob = await (await fetch(filmStripDataUrl)).blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        console.error("Download error:", error);
+        const link = document.createElement("a");
+        link.href = filmStripDataUrl;
+        link.download = fileName;
+        link.click();
+      }
+    }
+  };
+
+  // Print photo (web only)
+  const printFilmStrip = () => {
+    if (!filmStripDataUrl) return;
+
+    const printWindow = window.open("", "", "width=800,height=600");
+    if (printWindow) {
+      const htmlContent = `<html><head><title>Cyber-shot Booth Photo</title><style>body { margin: 0; padding: 20px; background: white; } img { max-width: 100%; height: auto; display: block; margin: 0 auto; } @media print { body { padding: 0; } }</style></head><body><img src="${filmStripDataUrl}" /></body></html>`;
+      printWindow.document.write(htmlContent);
+      printWindow.document.close();
+      setTimeout(() => {
+        printWindow.print();
+      }, 250);
     }
   };
 
   // Share photo (native only)
   const sharePhoto = async () => {
     if (!filmStripDataUrl || !isNative) return;
-    
+
     try {
       const timestamp = new Date().toISOString().slice(0, 10);
       const fileName = `cybershot-${timestamp}.png`;
-      const base64Data = filmStripDataUrl.split(',')[1];
-      
+      const base64Data = filmStripDataUrl.split(",")[1];
+
       // Save temporarily for sharing
       const result = await Filesystem.writeFile({
         path: fileName,
         data: base64Data,
         directory: Directory.Cache,
       });
-      
+
       await Share.share({
-        title: 'Cyber-shot Photo',
-        text: 'Check out my photo from Cyber-shot Booth!',
+        title: "Cyber-shot Photo",
+        text: "Check out my photo from Cyber-shot Booth!",
         url: result.uri,
-        dialogTitle: 'Share your photo',
+        dialogTitle: "Share your photo",
       });
     } catch (error) {
-      console.error('Error sharing:', error);
+      console.error("Error sharing:", error);
     }
   };
 
@@ -710,379 +526,326 @@ export default function Home() {
     };
   }, [stream]);
 
-  // Get current page stickers
-  const currentStickers = STICKERS.slice(stickerPage * stickersPerPage, (stickerPage + 1) * stickersPerPage);
+  const handleStickerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!selectedSticker) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const newSticker: StickerPosition = {
+      id: `sticker-${Date.now()}`,
+      type: selectedSticker,
+      x,
+      y,
+      rotation: 0,
+      scale: 1,
+    };
+
+    setStickers([...stickers, newSticker]);
+  };
+
+  const handleStickerDrag = (id: string, dx: number, dy: number) => {
+    setStickers(
+      stickers.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              x: Math.max(0, Math.min(600 - 80 * s.scale, s.x + dx)),
+              y: Math.max(0, Math.min(600 - 80 * s.scale, s.y + dy)),
+            }
+          : s
+      )
+    );
+  };
+
+  const handleStickerResize = (id: string, scale: number) => {
+    setStickers(stickers.map((s) => (s.id === id ? { ...s, scale: Math.max(0.5, Math.min(2, scale)) } : s)));
+  };
+
+  const handleStickerRotate = (id: string, rotation: number) => {
+    setStickers(stickers.map((s) => (s.id === id ? { ...s, rotation } : s)));
+  };
+
+  const deleteSticker = (id: string) => {
+    setStickers(stickers.filter((s) => s.id !== id));
+    setSelectedPlacedSticker(null);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#b0b0b0] to-[#909090]">
+    <div className="w-full h-screen bg-gradient-to-b from-[#b0b0b0] to-[#909090] flex items-center justify-center p-2">
       {/* Step 1: Layout Selection */}
       {step === "layout" && (
-        <div className="min-h-screen flex flex-col items-center justify-center p-4">
-          <div className="camera-body rounded-2xl p-6 max-w-md w-full">
-            {/* Camera top */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="text-xs font-display text-gray-600 tracking-wider">Cyber-shot</div>
-              <div className="flex gap-2">
-                <div className="w-3 h-3 rounded-full bg-red-500 shadow-inner"></div>
-                <div className="w-8 h-3 rounded bg-gray-400 shadow-inner"></div>
-              </div>
+        <div className="camera-body rounded-xl p-4 w-full max-w-md flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <span className="font-display text-sm text-gray-600">Cyber-shot</span>
+            <div className="w-4 h-4 rounded-full bg-red-500"></div>
+          </div>
+
+          <div className="lcd-screen rounded-lg p-6 text-center">
+            <h1 className="font-display text-3xl lcd-text mb-4">PHOTOBOOTH</h1>
+            <p className="font-lcd text-lg lcd-text mb-8">SELECT MODE</p>
+
+            <div className="flex gap-4">
+              <button
+                onClick={() => selectLayout("single")}
+                className="flex-1 bg-white border-4 border-gray-300 rounded-lg p-4 hover:bg-gray-100 transition"
+              >
+                <Camera className="w-8 h-8 mx-auto mb-2 text-gray-700" />
+                <p className="font-display text-sm">1 PHOTO</p>
+              </button>
+
+              <button
+                onClick={() => selectLayout("strip")}
+                className="flex-1 bg-white border-4 border-gray-300 rounded-lg p-4 hover:bg-gray-100 transition"
+              >
+                <div className="flex flex-col gap-1 mx-auto mb-2">
+                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
+                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
+                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
+                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
+                </div>
+                <p className="font-display text-sm">4 PHOTOS</p>
+              </button>
             </div>
-            
-            {/* LCD Screen */}
-            <div className="lcd-screen rounded-lg p-4 mb-4">
-              <div className="scanlines absolute inset-0 rounded-lg"></div>
-              <h1 className="font-display text-2xl lcd-text-orange text-center mb-2">
-                PHOTOBOOTH
-              </h1>
-              <p className="font-lcd text-lg lcd-text text-center mb-4">
-                SELECT MODE
-              </p>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={() => selectLayout("single")}
-                  className="camera-btn rounded-lg p-4 hover:bg-gray-200 transition-all"
-                >
-                  <div className="aspect-square bg-gray-300 rounded mb-2 flex items-center justify-center border-2 border-gray-400">
-                    <Camera className="w-8 h-8 text-gray-600" />
-                  </div>
-                  <p className="font-mono text-xs font-bold text-gray-700">1 PHOTO</p>
-                </button>
-                
-                <button
-                  onClick={() => selectLayout("strip")}
-                  className="camera-btn rounded-lg p-4 hover:bg-gray-200 transition-all"
-                >
-                  <div className="aspect-square bg-gray-300 rounded mb-2 flex flex-col gap-1 p-2 border-2 border-gray-400">
-                    {[1, 2, 3, 4].map((i) => (
-                      <div key={i} className="flex-1 bg-gray-400 rounded" />
-                    ))}
-                  </div>
-                  <p className="font-mono text-xs font-bold text-gray-700">4 PHOTOS</p>
-                </button>
-              </div>
-            </div>
-            
-            {/* SONY branding */}
-            <div className="text-center">
-              <span className="font-display text-xl font-bold metallic-text">SONY</span>
-            </div>
+          </div>
+
+          <div className="text-center">
+            <p className="font-lcd text-xs lcd-text">SONY</p>
           </div>
         </div>
       )}
 
-      {/* Step 2: Camera - Full Screen on mobile, 80/20 split on desktop */}
+      {/* Step 2: Camera */}
       {step === "camera" && (
-        <div className="fixed inset-0 bg-black flex flex-col">
-          {/* Video preview - takes remaining space after controls */}
-          <div className="relative overflow-hidden" style={{ height: 'calc(100vh - 180px)', maxHeight: 'calc(100dvh - 180px)' }}>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-              style={{ 
-                transform: facingMode === "user" ? "scaleX(-1)" : "none",
-                filter: cameraFilter === "retro" ? "sepia(0.3) contrast(1.1) saturate(0.9) brightness(1.05)" : "none"
-              }}
-            />
-
-            {/* LCD overlay */}
-            <div className="absolute inset-0 pointer-events-none">
-              {/* Top bar */}
-              <div className="absolute top-0 left-0 right-0 bg-black/60 p-3 flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
-                  <span className="font-lcd text-sm lcd-text">REC</span>
-                </div>
-                <span className="font-lcd text-lg lcd-text-orange">
-                  {photos.length}/{photosNeeded}
-                </span>
-                <span className="font-mono text-xs lcd-text">
-                  {new Date().toLocaleTimeString()}
-                </span>
-              </div>
-
-              {/* Countdown */}
-              {countdown !== null && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    {layout === "strip" && (
-                      <p className="font-lcd text-2xl lcd-text-orange mb-2">
-                        PHOTO {photos.length + 1} OF 4
-                      </p>
-                    )}
-                    <span className="font-display text-9xl text-white drop-shadow-2xl animate-pulse">
-                      {countdown || "📸"}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Flash */}
-              {flash && <div className="absolute inset-0 bg-white" />}
+        <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2">
+          <div className="camera-body rounded-xl p-4 flex-1 flex flex-col h-[80dvh]">
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-display text-sm text-gray-600">Cyber-shot</span>
+              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">REC</span>
             </div>
 
-            {/* Camera not ready */}
-            {!cameraReady && !cameraError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black">
-                <div className="text-center">
-                  <div className="animate-spin w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full mx-auto mb-4" />
-                  <p className="font-lcd text-xl lcd-text">INITIALIZING...</p>
-                </div>
-              </div>
-            )}
-
-            {/* Camera error */}
-            {cameraError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black">
-                <div className="text-center p-4">
-                  <p className="font-lcd text-lg lcd-text-red mb-4">{cameraError}</p>
-                  <button onClick={() => startCamera()} className="camera-btn px-6 py-3 rounded-lg font-mono">
+            {/* Camera View */}
+            <div className="lcd-screen rounded-lg flex-1 overflow-hidden mb-3 flex items-center justify-center bg-black relative">
+              {!stream && cameraError && (
+                <div className="text-center text-white">
+                  <p className="mb-4">{cameraError}</p>
+                  <button
+                    onClick={() => startCamera()}
+                    className="shutter-btn px-4 py-2 rounded text-white text-sm"
+                  >
                     RETRY
                   </button>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
 
-          {/* Bottom controls - fixed height to ensure visibility on all browsers */}
-          <div 
-            className="bg-gradient-to-t from-[#2a2a2a] to-[#1a1a1a] p-3 flex-shrink-0 flex flex-col justify-center"
-            style={{ 
-              height: '180px',
-              paddingBottom: 'max(env(safe-area-inset-bottom, 12px), 12px)'
-            }}
-          >
-            {/* Event name input */}
-            <div className="mb-2">
-              <Input
+              {!stream && !cameraError && (
+                <div className="text-center text-orange-500">
+                  <p className="font-lcd text-lg mb-2">STARTING CAMERA...</p>
+                </div>
+              )}
+
+              {stream && (
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  className={`w-full h-full object-cover ${cameraFilter === "retro" ? "brightness-110 contrast-125 saturate-150" : ""}`}
+                  style={{
+                    transform: "scaleX(-1)",
+                  }}
+                />
+              )}
+            </div>
+
+            {/* Controls - Fixed at bottom */}
+            <div className="fixed bottom-0 left-0 right-0 h-[180px] bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 flex flex-col gap-2 overflow-auto">
+              <div className="flex gap-2">
+                <button
+                  onClick={toggleCamera}
+                  disabled={!stream}
+                  className="camera-btn flex-1 py-2 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  FLIP
+                </button>
+
+                <button
+                  onClick={toggleFilter}
+                  className={`flex-1 py-2 rounded-lg font-display text-white text-sm ${
+                    cameraFilter === "retro" ? "shutter-btn" : "camera-btn"
+                  }`}
+                >
+                  {cameraFilter === "retro" ? "RETRO" : "ORIGINAL"}
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    if (layout === "strip") {
+                      setIsAutoCapturing(true);
+                    } else {
+                      capturePhoto();
+                      setTimeout(() => setStep("stickers"), 500);
+                    }
+                  }}
+                  disabled={!stream}
+                  className="shutter-btn flex-1 py-3 rounded-lg font-display text-white text-sm disabled:opacity-50"
+                >
+                  {countdown !== null ? `${countdown}` : layout === "strip" ? "START SEQUENCE" : "CAPTURE"}
+                </button>
+              </div>
+
+              {layout === "strip" && (
+                <div className="text-center font-lcd text-sm lcd-text">
+                  {isAutoCapturing ? `PHOTO ${currentPhotoIndex + 1} OF 4` : ""}
+                </div>
+              )}
+
+              <input
+                type="text"
+                placeholder="Event name (optional)"
                 value={eventText}
                 onChange={(e) => setEventText(e.target.value)}
-                placeholder="EVENT NAME (optional)"
-                className="bg-black/50 border-gray-600 text-white font-mono text-center placeholder:text-gray-500 h-9 text-sm"
-                maxLength={25}
+                className="w-full px-3 py-2 rounded text-sm bg-white/80"
               />
-            </div>
-            
-            {/* Filter toggle */}
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <button
-                onClick={() => setCameraFilter("original")}
-                className={`px-4 py-2 rounded-lg font-mono text-xs transition-all ${
-                  cameraFilter === "original"
-                    ? "bg-orange-500 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                }`}
-              >
-                ORIGINAL
-              </button>
-              <button
-                onClick={() => setCameraFilter("retro")}
-                className={`px-4 py-2 rounded-lg font-mono text-xs transition-all ${
-                  cameraFilter === "retro"
-                    ? "bg-orange-500 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                }`}
-              >
-                RETRO
-              </button>
-            </div>
-            
-            <div className="flex items-center justify-center gap-4">
-              {/* Cancel */}
-              <button
-                onClick={reset}
-                disabled={isAutoCapturing}
-                className="camera-btn w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30"
-              >
-                <X className="w-5 h-5 text-gray-700" />
-              </button>
-
-              {/* Shutter */}
-              <button
-                onClick={startCapture}
-                disabled={!cameraReady || countdown !== null || isAutoCapturing}
-                className="shutter-btn w-16 h-16 rounded-full flex items-center justify-center disabled:opacity-50"
-              >
-                <div className="w-12 h-12 rounded-full border-4 border-white/30 flex items-center justify-center">
-                  {layout === "strip" && !isAutoCapturing && (
-                    <span className="font-mono text-[10px] text-white/70">AUTO</span>
-                  )}
-                </div>
-              </button>
-
-              {/* Flip camera */}
-              <button
-                onClick={toggleCamera}
-                disabled={isAutoCapturing}
-                className="camera-btn w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30"
-              >
-                <RefreshCw className="w-5 h-5 text-gray-700" />
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Step 3: Add Stickers */}
+      {/* Step 3: Stickers */}
       {step === "stickers" && (
-        <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] overflow-hidden">
-          <div className="camera-body m-2 rounded-xl p-3 flex-1 flex flex-col overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-2">
-              <span className="font-display text-xs text-gray-600">Cyber-shot</span>
-              <span className="font-lcd text-sm lcd-text-orange bg-black/80 px-2 py-1 rounded">
-                EDIT MODE
-              </span>
+        <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 overflow-auto">
+          <div className="camera-body rounded-xl p-4 flex-1 flex flex-col h-[80dvh]">
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-display text-sm text-gray-600">Cyber-shot</span>
+              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">EDIT</span>
             </div>
 
-            {/* Preview area */}
-            <div className="lcd-screen rounded-lg p-2 flex-1 flex flex-col overflow-hidden">
-              <div
-                ref={previewContainerRef}
-                className="relative bg-white rounded flex-1 overflow-hidden"
-                onClick={addSticker}
-                onTouchEnd={(e) => {
-                  if (selectedSticker) {
-                    addSticker(e);
-                  }
-                }}
-              >
-                {previewDataUrl ? (
-                  <img
-                    src={previewDataUrl}
-                    alt="Preview"
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <div className="animate-spin w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full" />
-                  </div>
-                )}
-                
-                {/* Placed stickers */}
-                {stickers.map((sticker) => (
-                  <div
-                    key={sticker.id}
-                    className={`absolute cursor-move touch-none ${selectedPlacedSticker === sticker.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}
-                    style={{
-                      left: `${sticker.x}%`,
-                      top: `${sticker.y}%`,
-                      transform: `translate(-50%, -50%) rotate(${sticker.rotation}deg) scale(${sticker.scale})`,
-                    }}
-                    onMouseDown={(e) => handleStickerDrag(e, sticker.id)}
-                    onTouchStart={(e) => handleStickerDrag(e, sticker.id)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedPlacedSticker(sticker.id);
-                    }}
-                  >
-                    <img
-                      src={STICKERS.find((s) => s.type === sticker.type)?.src}
-                      alt={sticker.type}
-                      className="w-16 h-16 pointer-events-none"
-                      draggable={false}
-                    />
-                  </div>
-                ))}
-              </div>
+            {/* Preview */}
+            <div className="lcd-screen rounded-lg flex-1 overflow-auto mb-3 flex items-center justify-center bg-black relative">
+              {previewDataUrl && (
+                <div
+                  className="relative cursor-crosshair"
+                  onClick={handleStickerClick}
+                  style={{
+                    backgroundImage: `url(${previewDataUrl})`,
+                    backgroundSize: "contain",
+                    backgroundRepeat: "no-repeat",
+                    backgroundPosition: "center",
+                    width: "100%",
+                    height: "100%",
+                  }}
+                >
+                  {stickers.map((sticker) => {
+                    const stickerData = STICKERS.find((s) => s.type === sticker.type);
+                    return (
+                      <div
+                        key={sticker.id}
+                        className={`absolute cursor-move ${selectedPlacedSticker === sticker.id ? "ring-2 ring-yellow-400" : ""}`}
+                        style={{
+                          left: `${sticker.x}px`,
+                          top: `${sticker.y}px`,
+                          width: `${80 * sticker.scale}px`,
+                          height: `${80 * sticker.scale}px`,
+                          transform: `rotate(${sticker.rotation}deg)`,
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedPlacedSticker(sticker.id);
+                        }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          const startX = e.clientX;
+                          const startY = e.clientY;
 
-              {/* Sticker controls when selected */}
-              {selectedPlacedSticker && (
-                <div className="flex items-center justify-center gap-2 mt-2 p-2 bg-black/50 rounded">
-                  <button
-                    onClick={() => resizeSticker(selectedPlacedSticker, -0.2)}
-                    className="camera-btn p-2 rounded"
-                  >
-                    <ZoomOut className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => resizeSticker(selectedPlacedSticker, 0.2)}
-                    className="camera-btn p-2 rounded"
-                  >
-                    <ZoomIn className="w-5 h-5" />
-                  </button>
-                  <button
-                    onClick={() => deleteSticker(selectedPlacedSticker)}
-                    className="camera-btn p-2 rounded bg-red-100"
-                  >
-                    <Trash2 className="w-5 h-5 text-red-600" />
-                  </button>
-                  <button
-                    onClick={() => setSelectedPlacedSticker(null)}
-                    className="camera-btn p-2 rounded bg-green-100"
-                  >
-                    <Check className="w-5 h-5 text-green-600" />
-                  </button>
+                          const handleMouseMove = (moveEvent: MouseEvent) => {
+                            const dx = moveEvent.clientX - startX;
+                            const dy = moveEvent.clientY - startY;
+                            handleStickerDrag(sticker.id, dx, dy);
+                          };
+
+                          const handleMouseUp = () => {
+                            document.removeEventListener("mousemove", handleMouseMove);
+                            document.removeEventListener("mouseup", handleMouseUp);
+                          };
+
+                          document.addEventListener("mousemove", handleMouseMove);
+                          document.addEventListener("mouseup", handleMouseUp);
+                        }}
+                      >
+                        <img src={stickerData?.src} alt={sticker.type} className="w-full h-full" />
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            {/* Footer text input */}
-            <div className="mt-2">
-              <Input
-                value={footerText}
-                onChange={(e) => setFooterText(e.target.value)}
-                placeholder="CUSTOM TEXT (e.g., NUS EE Class of '25)"
-                className="bg-gray-200 border-gray-400 font-mono text-sm text-center"
-                maxLength={30}
-              />
-            </div>
-
-            {/* Sticker selector */}
-            <div className="mt-2 p-2 bg-gray-200 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-xs text-gray-600">TAP TO SELECT, THEN TAP PREVIEW</span>
-                <div className="flex gap-1">
-                  {Array.from({ length: totalStickerPages }).map((_, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setStickerPage(i)}
-                      className={`w-2 h-2 rounded-full ${stickerPage === i ? 'bg-orange-500' : 'bg-gray-400'}`}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {currentStickers.map((sticker) => (
+            {/* Sticker Controls - Fixed at bottom */}
+            <div className="fixed bottom-0 left-0 right-0 h-[180px] bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 flex flex-col gap-2 overflow-auto">
+              <div className="flex gap-2 flex-wrap">
+                {STICKERS.map((sticker) => (
                   <button
                     key={sticker.type}
-                    onClick={() => {
-                      setSelectedSticker(sticker.type);
-                      setSelectedPlacedSticker(null);
-                    }}
-                    className={`flex-shrink-0 w-12 h-12 rounded-lg border-2 transition-all ${
-                      selectedSticker === sticker.type
-                        ? "border-orange-500 bg-orange-100 scale-110"
-                        : "border-gray-300 bg-white hover:border-orange-300"
-                    }`}
+                    onClick={() => setSelectedSticker(selectedSticker === sticker.type ? null : sticker.type)}
+                    className={`w-12 h-12 rounded-lg border-2 ${
+                      selectedSticker === sticker.type ? "border-yellow-400 bg-yellow-100" : "border-gray-300 bg-white"
+                    } flex items-center justify-center hover:border-yellow-400 transition`}
+                    title={sticker.label}
                   >
-                    <img
-                      src={sticker.src}
-                      alt={sticker.label}
-                      className="w-full h-full object-contain p-1"
-                    />
+                    <img src={sticker.src} alt={sticker.label} className="w-8 h-8" />
                   </button>
                 ))}
               </div>
-            </div>
 
-            {/* Action buttons */}
-            <div className="flex gap-2 mt-2">
-              <button
-                onClick={moveToFinal}
-                className="shutter-btn flex-1 py-3 rounded-lg font-display text-white text-sm"
-              >
-                GENERATE
-              </button>
-              <button
-                onClick={reset}
-                className="camera-btn px-4 py-3 rounded-lg"
-              >
-                <RotateCcw className="w-5 h-5" />
-              </button>
+              {selectedPlacedSticker && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleStickerRotate(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.rotation || 0) + 15)}
+                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
+                  >
+                    ROTATE
+                  </button>
+                  <button
+                    onClick={() => handleStickerResize(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.scale || 1) + 0.2)}
+                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
+                  >
+                    BIGGER
+                  </button>
+                  <button
+                    onClick={() => handleStickerResize(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.scale || 1) - 0.2)}
+                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
+                  >
+                    SMALLER
+                  </button>
+                  <button
+                    onClick={() => deleteSticker(selectedPlacedSticker)}
+                    className="camera-btn px-2 py-2 rounded-lg"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              <input
+                type="text"
+                placeholder="Footer text (optional)"
+                value={footerText}
+                onChange={(e) => setFooterText(e.target.value)}
+                className="w-full px-3 py-2 rounded text-sm bg-white/80"
+              />
+
+              <div className="flex gap-2">
+                <button onClick={reset} className="camera-btn flex-1 py-2 rounded-lg text-sm">
+                  BACK
+                </button>
+                <button onClick={moveToFinal} className="shutter-btn flex-1 py-2 rounded-lg text-white text-sm">
+                  DONE
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1094,19 +857,13 @@ export default function Home() {
           <div className="camera-body rounded-xl p-4 flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <span className="font-display text-sm text-gray-600">Cyber-shot</span>
-              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">
-                COMPLETE
-              </span>
+              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">COMPLETE</span>
             </div>
 
             {/* Result preview */}
             <div className="lcd-screen rounded-lg p-3 flex-1 overflow-auto">
               {filmStripReady ? (
-                <img
-                  src={filmStripDataUrl}
-                  alt="Film strip"
-                  className="w-full h-auto rounded"
-                />
+                <img src={filmStripDataUrl} alt="Film strip" className="w-full h-auto rounded" />
               ) : (
                 <div className="w-full h-64 flex items-center justify-center">
                   <div className="text-center">
@@ -1117,18 +874,28 @@ export default function Home() {
               )}
             </div>
 
-
-
             {/* Actions */}
-            <div className="flex gap-2 mt-3">
+            <div className="flex gap-2 mt-3 flex-wrap">
               <button
                 onClick={downloadFilmStrip}
                 disabled={!filmStripReady}
                 className="shutter-btn flex-1 py-3 rounded-lg font-display text-white text-sm flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <Download className="w-5 h-5" />
-                {isNative ? 'SAVE' : 'DOWNLOAD'}
+                {isNative ? "SAVE" : "DOWNLOAD"}
               </button>
+
+              {!isNative && (
+                <button
+                  onClick={printFilmStrip}
+                  disabled={!filmStripReady}
+                  className="camera-btn flex-1 py-3 rounded-lg font-display text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Printer className="w-5 h-5" />
+                  PRINT
+                </button>
+              )}
+
               {isNative && (
                 <button
                   onClick={sharePhoto}
@@ -1138,10 +905,8 @@ export default function Home() {
                   <Share2 className="w-5 h-5" />
                 </button>
               )}
-              <button
-                onClick={reset}
-                className="camera-btn px-4 py-3 rounded-lg flex items-center gap-2"
-              >
+
+              <button onClick={reset} className="camera-btn px-4 py-3 rounded-lg flex items-center gap-2">
                 <RotateCcw className="w-5 h-5" />
                 NEW
               </button>
@@ -1153,6 +918,7 @@ export default function Home() {
       {/* Hidden canvases */}
       <canvas ref={canvasRef} className="hidden" />
       <canvas ref={filmStripCanvasRef} className="hidden" />
+      <canvas ref={previewCanvasRef} className="hidden" />
     </div>
   );
 }
