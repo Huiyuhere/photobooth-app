@@ -20,18 +20,9 @@ interface CapturedPhoto {
   timestamp: Date;
 }
 
-// Strip_Final.png: 1536x2832 — 4 photo slots for strip layout
-// Scaled to 600px wide canvas (scale = 600/1536 = 0.3906)
-const STRIP_CANVAS_W = 600;
-const STRIP_CANVAS_H = 1106; // int(2832 * 600/1536)
+// Strip overlay: transparent PNG (600x1870) with stickers positioned in gaps
 const BASE = import.meta.env.BASE_URL;
-const STRIP_OVERLAY = `${BASE}images/Strip_Final.png`;
-const STRIP_SLOTS = [
-  { x: 0, y: 179, w: 600, h: 136 },
-  { x: 0, y: 363, w: 600, h: 136 },
-  { x: 0, y: 570, w: 600, h: 136 },
-  { x: 0, y: 753, w: 600, h: 136 },
-];
+const STRIP_OVERLAY = `${BASE}images/Strip_Overlay_v2.png`;
 
 // Frame1_hires.png: 2752x1536 — 1 photo slot for single landscape layout
 // Scaled to 600px wide canvas (scale = 600/2752 = 0.2180)
@@ -261,21 +252,32 @@ export default function Home() {
         const overlay = await loadImage(FRAME_OVERLAY);
         ctx.drawImage(overlay, 0, 0, FRAME_CANVAS_W, FRAME_CANVAS_H);
       } else {
-        // ── Strip with Strip_Layer1.png overlay ─────────────────────────
-        canvas.width = STRIP_CANVAS_W;
-        canvas.height = STRIP_CANVAS_H;
+        // ── Strip with sticker overlay (same dimensions as plain strip) ──
+        const stripWidth = 600;
+        const photoWidth = 560;
+        const photoHeight = 400;
+        const margin = 20;
+        const headerHeight = 100;
+        const footerHeight = 100;
+        const spacing = 10;
+        const photoSectionHeight = photos.length * (photoHeight + spacing) - spacing;
+        const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
+
+        canvas.width = stripWidth;
+        canvas.height = totalHeight;
 
         // White background
         ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, STRIP_CANVAS_W, STRIP_CANVAS_H);
+        ctx.fillRect(0, 0, stripWidth, totalHeight);
 
-        // Draw photos in the 4 slots
-        const slotsToFill = Math.min(photos.length, STRIP_SLOTS.length);
-        for (let i = 0; i < slotsToFill; i++) {
+        // Draw photos (same positions as plain strip)
+        let currentY = margin + headerHeight;
+        for (let i = 0; i < photos.length; i++) {
           const img = await loadImage(photos[i].dataUrl);
-          const { x, y, w, h } = STRIP_SLOTS[i];
+          const photoX = margin;
+          // Cover-fit
           const imgAspect = img.naturalWidth / img.naturalHeight;
-          const slotAspect = w / h;
+          const slotAspect = photoWidth / photoHeight;
           let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
           if (imgAspect > slotAspect) {
             sw = img.naturalHeight * slotAspect;
@@ -284,12 +286,13 @@ export default function Home() {
             sh = img.naturalWidth / slotAspect;
             sy = (img.naturalHeight - sh) / 2;
           }
-          ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+          ctx.drawImage(img, sx, sy, sw, sh, photoX, currentY, photoWidth, photoHeight);
+          currentY += photoHeight + spacing;
         }
 
-        // Draw Strip overlay on top
+        // Draw sticker overlay on top (transparent PNG, same canvas size)
         const overlay = await loadImage(STRIP_OVERLAY);
-        ctx.drawImage(overlay, 0, 0, STRIP_CANVAS_W, STRIP_CANVAS_H);
+        ctx.drawImage(overlay, 0, 0, stripWidth, totalHeight);
       }
     } else {
       // ── Plain design (original layout) ────────────────────────────────
