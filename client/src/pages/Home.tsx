@@ -24,7 +24,8 @@ interface CapturedPhoto {
 // Scaled to 600px wide canvas (scale = 600/1536 = 0.3906)
 const STRIP_CANVAS_W = 600;
 const STRIP_CANVAS_H = 1106; // int(2832 * 600/1536)
-const STRIP_OVERLAY = "/images/Strip_Final.png";
+const BASE = import.meta.env.BASE_URL;
+const STRIP_OVERLAY = `${BASE}images/Strip_Final.png`;
 const STRIP_SLOTS = [
   { x: 0, y: 179, w: 600, h: 136 },
   { x: 0, y: 363, w: 600, h: 136 },
@@ -36,7 +37,7 @@ const STRIP_SLOTS = [
 // Scaled to 600px wide canvas (scale = 600/2752 = 0.2180)
 const FRAME_CANVAS_W = 600;
 const FRAME_CANVAS_H = 335; // int(1536 * 600/2752)
-const FRAME_OVERLAY = "/images/Frame1_hires.png";
+const FRAME_OVERLAY = `${BASE}images/Frame1_hires.png`;
 // Photo area: x=354-2397, y=300-1100 in original → scaled
 const FRAME_SLOT = { x: 77, y: 65, w: 445, h: 175 };
 
