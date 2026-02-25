@@ -1,5 +1,5 @@
 import NotFound from "@/pages/NotFound";
-import { Route, Switch, Router as WouterRouter } from "wouter";
+import { Route, Switch, Router } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Home from "./pages/Home";
 
@@ -13,12 +13,13 @@ function Routes() {
 }
 
 function App() {
-  const base = import.meta.env.BASE_URL.replace(/\/$/, "") || "";
+  // Remove trailing slash from BASE_URL for wouter base
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "") || "";
   return (
     <ErrorBoundary>
-      <WouterRouter base={base}>
+      <Router base={base}>
         <Routes />
-      </WouterRouter>
+      </Router>
     </ErrorBoundary>
   );
 }
