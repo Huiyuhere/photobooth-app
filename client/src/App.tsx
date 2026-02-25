@@ -1,5 +1,6 @@
 import NotFound from "@/pages/NotFound";
 import { Route, Switch, Router } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Home from "./pages/Home";
 
@@ -13,11 +14,9 @@ function Routes() {
 }
 
 function App() {
-  // Remove trailing slash from BASE_URL for wouter base
-  const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "") || "";
   return (
     <ErrorBoundary>
-      <Router base={base}>
+      <Router hook={useHashLocation}>
         <Routes />
       </Router>
     </ErrorBoundary>
