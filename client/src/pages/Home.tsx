@@ -1,85 +1,74 @@
 /*
  * Sony Cyber-shot Style Photobooth
  * Design: Retro digital camera aesthetic inspired by Sony Cyber-shot
- * Features: Full-screen camera, front/back toggle, draggable stickers, QR sharing
+ * Features: Full-screen camera, front/back toggle, strip design selection
  */
 
-
-import { Input } from "@/components/ui/input";
-import { Camera, Download, RotateCcw, RefreshCw, ZoomIn, ZoomOut, X, Check, Trash2, Share2, Printer } from "lucide-react";
+import { Camera, Download, RotateCcw, RefreshCw, Share2, Printer } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 
-
 type LayoutType = "single" | "strip" | null;
 type FacingMode = "user" | "environment";
 type CameraFilter = "original" | "retro";
+type DesignType = "plain" | "designed";
 
 interface CapturedPhoto {
   dataUrl: string;
   timestamp: Date;
 }
 
-interface StickerPosition {
-  id: string;
-  type: string;
-  x: number;
-  y: number;
-  rotation: number;
-  scale: number;
-}
-
-const STICKERS = [
-  { type: "resistor", src: "/images/sticker-resistor.png", label: "Resistor" },
-  { type: "capacitor", src: "/images/sticker-capacitor.png", label: "Capacitor" },
-  { type: "led", src: "/images/sticker-led.png", label: "LED" },
-  { type: "circuit", src: "/images/sticker-circuit.png", label: "Circuit" },
-  { type: "oscilloscope", src: "/images/sticker-oscilloscope.png", label: "Scope" },
-  { type: "transistor", src: "/images/sticker-transistor.png", label: "Transistor" },
-  { type: "chip", src: "/images/sticker-chip.png", label: "Chip" },
-  { type: "battery", src: "/images/sticker-battery.png", label: "Battery" },
-  { type: "soldering", src: "/images/sticker-soldering.png", label: "Solder" },
-  { type: "multimeter", src: "/images/sticker-multimeter.png", label: "Meter" },
-  { type: "smiley", src: "/images/sticker-smiley.png", label: "Smiley" },
-  { type: "star", src: "/images/sticker-star.png", label: "Star" },
-  { type: "heart", src: "/images/sticker-heart.png", label: "Heart" },
-  { type: "rainbow", src: "/images/sticker-rainbow.png", label: "Rainbow" },
+// Strip_Final.png: 1536x2832 — 4 photo slots for strip layout
+// Scaled to 600px wide canvas (scale = 600/1536 = 0.3906)
+const STRIP_CANVAS_W = 600;
+const STRIP_CANVAS_H = 1106; // int(2832 * 600/1536)
+const STRIP_OVERLAY = "/images/Strip_Final.png";
+const STRIP_SLOTS = [
+  { x: 0, y: 179, w: 600, h: 136 },
+  { x: 0, y: 363, w: 600, h: 136 },
+  { x: 0, y: 570, w: 600, h: 136 },
+  { x: 0, y: 753, w: 600, h: 136 },
 ];
+
+// Frame1_hires.png: 2752x1536 — 1 photo slot for single landscape layout
+// Scaled to 600px wide canvas (scale = 600/2752 = 0.2180)
+const FRAME_CANVAS_W = 600;
+const FRAME_CANVAS_H = 335; // int(1536 * 600/2752)
+const FRAME_OVERLAY = "/images/Frame1_hires.png";
+// Photo area: x=354-2397, y=300-1100 in original → scaled
+const FRAME_SLOT = { x: 77, y: 65, w: 445, h: 175 };
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const filmStripCanvasRef = useRef<HTMLCanvasElement>(null);
-  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [step, setStep] = useState<"layout" | "camera" | "stickers" | "final">("layout");
+  const [step, setStep] = useState<"layout" | "camera" | "design" | "final">("layout");
   const [layout, setLayout] = useState<LayoutType>(null);
   const [photos, setPhotos] = useState<CapturedPhoto[]>([]);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [facingMode, setFacingMode] = useState<FacingMode>("user");
   const [cameraError, setCameraError] = useState("");
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [stickers, setStickers] = useState<StickerPosition[]>([]);
-  const [selectedSticker, setSelectedSticker] = useState<string | null>(null);
-  const [selectedPlacedSticker, setSelectedPlacedSticker] = useState<string | null>(null);
-  const [previewDataUrl, setPreviewDataUrl] = useState("");
   const [filmStripDataUrl, setFilmStripDataUrl] = useState("");
   const [filmStripReady, setFilmStripReady] = useState(false);
   const [eventText, setEventText] = useState("");
-  const [footerText, setFooterText] = useState("");
   const [cameraFilter, setCameraFilter] = useState<CameraFilter>("original");
   const [isAutoCapturing, setIsAutoCapturing] = useState(false);
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
+  const [selectedDesign, setSelectedDesign] = useState<DesignType>("plain");
 
-  // Start camera
-  const startCamera = useCallback(async () => {
+  // ─── Camera ───────────────────────────────────────────────────────────────
+
+  const startCamera = useCallback(async (mode?: FacingMode) => {
     setCameraError("");
+    const facing = mode ?? facingMode;
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: facingMode,
+          facingMode: facing,
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -87,6 +76,7 @@ export default function Home() {
       setStream(mediaStream);
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
+        videoRef.current.play().catch(() => {});
       }
     } catch (error) {
       console.error("Camera error:", error);
@@ -94,34 +84,66 @@ export default function Home() {
     }
   }, [facingMode]);
 
-  // Stop camera
   const stopCamera = useCallback(() => {
+    setStream((prev) => {
+      if (prev) {
+        prev.getTracks().forEach((track) => track.stop());
+      }
+      return null;
+    });
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    const newMode: FacingMode = facingMode === "user" ? "environment" : "user";
+    setFacingMode(newMode);
+    // Stop current stream then start with new facing mode
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+    startCamera(newMode);
+  }, [facingMode, stream, startCamera]);
+
+  // Attach stream to video element whenever stream changes
+  useEffect(() => {
+    if (stream && videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
     }
   }, [stream]);
 
-  // Toggle camera
-  const toggleCamera = () => {
-    stopCamera();
-    setFacingMode(facingMode === "user" ? "environment" : "user");
-  };
+  // Start camera when entering camera step
+  useEffect(() => {
+    if (step === "camera") {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
-  // Apply retro filter
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Filters ──────────────────────────────────────────────────────────────
+
   const applyRetroFilter = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-    // Warm color overlay
     ctx.fillStyle = "rgba(255, 200, 100, 0.08)";
     ctx.fillRect(0, 0, width, height);
-
-    // Vignette effect
     const gradient = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height));
     gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
     gradient.addColorStop(1, "rgba(0, 0, 0, 0.3)");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
-
-    // Film grain
     for (let i = 0; i < 500; i++) {
       const x = Math.random() * width;
       const y = Math.random() * height;
@@ -131,18 +153,28 @@ export default function Home() {
     }
   };
 
-  // Capture photo
+  // ─── Capture ──────────────────────────────────────────────────────────────
+
   const capturePhoto = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return;
-
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
+    const vw = videoRef.current.videoWidth || 640;
+    const vh = videoRef.current.videoHeight || 480;
+    canvas.width = vw;
+    canvas.height = vh;
 
-    ctx.drawImage(videoRef.current, 0, 0);
+    // Mirror horizontally for front camera
+    if (facingMode === "user") {
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.drawImage(videoRef.current, -vw, 0, vw, vh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(videoRef.current, 0, 0, vw, vh);
+    }
 
     if (cameraFilter === "retro") {
       applyRetroFilter(ctx, canvas.width, canvas.height);
@@ -150,126 +182,46 @@ export default function Home() {
 
     const dataUrl = canvas.toDataURL("image/png");
     setPhotos((prev) => [...prev, { dataUrl, timestamp: new Date() }]);
-  }, [cameraFilter]);
+  }, [cameraFilter, facingMode]);
 
-  // Auto capture for strip mode
+  // Auto-capture sequence for strip mode
   useEffect(() => {
-    if (!isAutoCapturing || !layout || layout !== "strip") return;
+    if (!isAutoCapturing || !layout) return;
+
+    const photoCount = layout === "strip" ? 4 : 1;
 
     const captureSequence = async () => {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < photoCount; i++) {
         setCurrentPhotoIndex(i);
-
-        // Countdown
         for (let j = 3; j > 0; j--) {
           setCountdown(j);
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-
         setCountdown(null);
         await capturePhoto();
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
-
       setIsAutoCapturing(false);
       setCurrentPhotoIndex(0);
-      setStep("stickers");
+      setStep("design");
     };
 
     captureSequence();
   }, [isAutoCapturing, layout, capturePhoto]);
 
-  // Generate preview
-  const generatePreview = useCallback(async () => {
-    if (photos.length === 0 || !previewCanvasRef.current) return;
+  // ─── Film Strip Generation ─────────────────────────────────────────────────
 
-    const canvas = previewCanvasRef.current;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const isSingle = layout === "single";
-
-    const stripWidth = 600;
-    const photoWidth = 560;
-    const photoHeight = isSingle ? 560 : 400;
-    const margin = 20;
-    const headerHeight = 100;
-    const footerHeight = 100;
-    const spacing = 10;
-
-    const photoSectionHeight = isSingle ? photoHeight : photos.length * (photoHeight + spacing) - spacing;
-
-    const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
-
-    canvas.width = stripWidth;
-    canvas.height = totalHeight;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, stripWidth, totalHeight);
-
-    ctx.fillStyle = "rgba(0, 0, 0, 0.02)";
-    for (let i = 0; i < 1500; i++) {
-      ctx.fillRect(Math.random() * stripWidth, Math.random() * totalHeight, 1, 1);
-    }
-
-    let currentY = margin + headerHeight;
-
-    // Header
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 14px 'Share Tech Mono', monospace";
-    ctx.fillText("REC ● PLAY ▲ SP   CYBER-SHOT", margin + 15, margin + 30);
-
-    const eventDate = photos[0].timestamp;
-    const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
-    ctx.fillStyle = "#ff9900";
-    ctx.font = "bold 22px 'Orbitron', sans-serif";
-    ctx.fillText(`${monthYear} — ${eventText.toUpperCase() || "MEMORIES"}`, margin + 15, margin + headerHeight - 25);
-
-    // Draw photos
-    for (let i = 0; i < photos.length; i++) {
-      const photo = photos[i];
+  const loadImage = (src: string): Promise<HTMLImageElement> =>
+    new Promise((resolve) => {
       const img = new Image();
-      img.src = photo.dataUrl;
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(img);
+      img.src = src;
+    });
 
-      await new Promise((resolve) => {
-        img.onload = resolve;
-        img.onerror = resolve;
-      });
-
-      const photoX = margin + (photoWidth - 560) / 2;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(photoX - 5, currentY - 5, 560 + 10, photoHeight + 10);
-
-      ctx.drawImage(img, photoX, currentY, 560, photoHeight);
-      currentY += photoHeight + spacing;
-    }
-
-    // Footer
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(margin, currentY, photoWidth, footerHeight - 10);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 14px 'Share Tech Mono', monospace";
-    ctx.fillText("CYBER-SHOT BOOTH", margin + 15, currentY + 30);
-
-    ctx.fillStyle = "#ff9900";
-    ctx.font = "bold 18px 'Orbitron', sans-serif";
-    ctx.fillText(footerText.toUpperCase() || "MEMORIES MADE", margin + 15, currentY + 65);
-
-    ctx.fillStyle = "#666666";
-    const dateStr = eventDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
-    const dateWidth = ctx.measureText(dateStr).width;
-    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, currentY + 80);
-
-    setPreviewDataUrl(canvas.toDataURL("image/png"));
-  }, [photos, layout, eventText, footerText]);
-
-  // Generate final film strip with stickers
   const generateFilmStrip = useCallback(async () => {
     if (photos.length === 0 || !filmStripCanvasRef.current) return;
+    setFilmStripReady(false);
 
     const canvas = filmStripCanvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -277,137 +229,174 @@ export default function Home() {
 
     const isSingle = layout === "single";
 
-    const stripWidth = 600;
-    const photoWidth = 560;
-    const photoHeight = isSingle ? 560 : 400;
-    const margin = 20;
-    const headerHeight = 100;
-    const footerHeight = 100;
-    const spacing = 10;
+    if (selectedDesign === "designed") {
+      if (isSingle) {
+        // ── Single with Frame1.png overlay ──────────────────────────────
+        canvas.width = FRAME_CANVAS_W;
+        canvas.height = FRAME_CANVAS_H;
 
-    const photoSectionHeight = isSingle ? photoHeight : photos.length * (photoHeight + spacing) - spacing;
+        // White background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, FRAME_CANVAS_W, FRAME_CANVAS_H);
 
-    const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
+        // Draw photo in the frame slot
+        const photo = photos[0];
+        const img = await loadImage(photo.dataUrl);
+        const { x, y, w, h } = FRAME_SLOT;
+        // Cover-fit the photo into the slot
+        const imgAspect = img.naturalWidth / img.naturalHeight;
+        const slotAspect = w / h;
+        let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+        if (imgAspect > slotAspect) {
+          sw = img.naturalHeight * slotAspect;
+          sx = (img.naturalWidth - sw) / 2;
+        } else {
+          sh = img.naturalWidth / slotAspect;
+          sy = (img.naturalHeight - sh) / 2;
+        }
+        ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 
-    canvas.width = stripWidth;
-    canvas.height = totalHeight;
+        // Draw Frame overlay on top
+        const overlay = await loadImage(FRAME_OVERLAY);
+        ctx.drawImage(overlay, 0, 0, FRAME_CANVAS_W, FRAME_CANVAS_H);
+      } else {
+        // ── Strip with Strip_Layer1.png overlay ─────────────────────────
+        canvas.width = STRIP_CANVAS_W;
+        canvas.height = STRIP_CANVAS_H;
 
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, stripWidth, totalHeight);
+        // White background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, STRIP_CANVAS_W, STRIP_CANVAS_H);
 
-    ctx.fillStyle = "rgba(0, 0, 0, 0.02)";
-    for (let i = 0; i < 1500; i++) {
-      ctx.fillRect(Math.random() * stripWidth, Math.random() * totalHeight, 1, 1);
-    }
+        // Draw photos in the 4 slots
+        const slotsToFill = Math.min(photos.length, STRIP_SLOTS.length);
+        for (let i = 0; i < slotsToFill; i++) {
+          const img = await loadImage(photos[i].dataUrl);
+          const { x, y, w, h } = STRIP_SLOTS[i];
+          const imgAspect = img.naturalWidth / img.naturalHeight;
+          const slotAspect = w / h;
+          let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+          if (imgAspect > slotAspect) {
+            sw = img.naturalHeight * slotAspect;
+            sx = (img.naturalWidth - sw) / 2;
+          } else {
+            sh = img.naturalWidth / slotAspect;
+            sy = (img.naturalHeight - sh) / 2;
+          }
+          ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+        }
 
-    let currentY = margin + headerHeight;
+        // Draw Strip overlay on top
+        const overlay = await loadImage(STRIP_OVERLAY);
+        ctx.drawImage(overlay, 0, 0, STRIP_CANVAS_W, STRIP_CANVAS_H);
+      }
+    } else {
+      // ── Plain design (original layout) ────────────────────────────────
+      const stripWidth = 600;
+      const photoWidth = 560;
+      const photoHeight = isSingle ? 560 : 400;
+      const margin = 20;
+      const headerHeight = 100;
+      const footerHeight = 100;
+      const spacing = 10;
 
-    // Header
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
+      const photoSectionHeight = isSingle
+        ? photoHeight
+        : photos.length * (photoHeight + spacing) - spacing;
+      const totalHeight = headerHeight + photoSectionHeight + footerHeight + margin * 2;
 
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 14px 'Share Tech Mono', monospace";
-    ctx.fillText("REC ● PLAY ▲ SP   CYBER-SHOT", margin + 15, margin + 30);
+      canvas.width = stripWidth;
+      canvas.height = totalHeight;
 
-    const eventDate = photos[0].timestamp;
-    const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
-    ctx.fillStyle = "#ff9900";
-    ctx.font = "bold 22px 'Orbitron', sans-serif";
-    ctx.fillText(`${monthYear} — ${eventText.toUpperCase() || "MEMORIES"}`, margin + 15, margin + headerHeight - 25);
-
-    // Draw photos
-    for (let i = 0; i < photos.length; i++) {
-      const photo = photos[i];
-      const img = new Image();
-      img.src = photo.dataUrl;
-
-      await new Promise((resolve) => {
-        img.onload = resolve;
-        img.onerror = resolve;
-      });
-
-      const photoX = margin + (photoWidth - 560) / 2;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(photoX - 5, currentY - 5, 560 + 10, photoHeight + 10);
+      ctx.fillRect(0, 0, stripWidth, totalHeight);
 
-      ctx.drawImage(img, photoX, currentY, 560, photoHeight);
-      currentY += photoHeight + spacing;
+      // Subtle grain
+      ctx.fillStyle = "rgba(0, 0, 0, 0.02)";
+      for (let i = 0; i < 1500; i++) {
+        ctx.fillRect(Math.random() * stripWidth, Math.random() * totalHeight, 1, 1);
+      }
+
+      let currentY = margin + headerHeight;
+
+      // Header
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(margin, margin, photoWidth, headerHeight - 10);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px 'Share Tech Mono', monospace";
+      ctx.fillText("REC ● PLAY ▲ SP   CYBER-SHOT", margin + 15, margin + 30);
+
+      const eventDate = photos[0].timestamp;
+      const monthYear = eventDate.toLocaleDateString("en-US", { month: "short", year: "numeric" }).toUpperCase();
+      ctx.fillStyle = "#ff9900";
+      ctx.font = "bold 22px 'Orbitron', sans-serif";
+      ctx.fillText(`${monthYear} — ${eventText.toUpperCase() || "MEMORIES"}`, margin + 15, margin + headerHeight - 25);
+
+      // Photos
+      for (let i = 0; i < photos.length; i++) {
+        const img = await loadImage(photos[i].dataUrl);
+        const photoX = margin + (photoWidth - 560) / 2;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(photoX - 5, currentY - 5, 560 + 10, photoHeight + 10);
+
+        // Cover-fit
+        const imgAspect = img.naturalWidth / img.naturalHeight;
+        const slotAspect = 560 / photoHeight;
+        let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+        if (imgAspect > slotAspect) {
+          sw = img.naturalHeight * slotAspect;
+          sx = (img.naturalWidth - sw) / 2;
+        } else {
+          sh = img.naturalWidth / slotAspect;
+          sy = (img.naturalHeight - sh) / 2;
+        }
+        ctx.drawImage(img, sx, sy, sw, sh, photoX, currentY, 560, photoHeight);
+        currentY += photoHeight + spacing;
+      }
+
+      // Footer
+      ctx.fillStyle = "#1a1a1a";
+      ctx.fillRect(margin, currentY, photoWidth, footerHeight - 10);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px 'Share Tech Mono', monospace";
+      ctx.fillText("CYBER-SHOT BOOTH", margin + 15, currentY + 30);
+      ctx.fillStyle = "#ff9900";
+      ctx.font = "bold 18px 'Orbitron', sans-serif";
+      ctx.fillText("MEMORIES MADE", margin + 15, currentY + 65);
+      ctx.fillStyle = "#666666";
+      const dateStr = eventDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
+      const dateWidth = ctx.measureText(dateStr).width;
+      ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, currentY + 80);
     }
 
-    // Footer
-    ctx.fillStyle = "#1a1a1a";
-    ctx.fillRect(margin, currentY, photoWidth, footerHeight - 10);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 14px 'Share Tech Mono', monospace";
-    ctx.fillText("CYBER-SHOT BOOTH", margin + 15, currentY + 30);
-
-    ctx.fillStyle = "#ff9900";
-    ctx.font = "bold 18px 'Orbitron', sans-serif";
-    ctx.fillText(footerText.toUpperCase() || "MEMORIES MADE", margin + 15, currentY + 65);
-
-    ctx.fillStyle = "#666666";
-    const dateStr = eventDate.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
-    const dateWidth = ctx.measureText(dateStr).width;
-    ctx.fillText(dateStr, (stripWidth - dateWidth) / 2, currentY + 80);
-
-    // Draw stickers
-    for (const sticker of stickers) {
-      const stickerImg = new Image();
-      stickerImg.src = STICKERS.find((s) => s.type === sticker.type)?.src || "";
-
-      await new Promise((resolve) => {
-        stickerImg.onload = resolve;
-        stickerImg.onerror = resolve;
-      });
-
-      const stickerWidth = 80 * sticker.scale;
-      const stickerHeight = 80 * sticker.scale;
-
-      ctx.save();
-      ctx.translate(sticker.x + stickerWidth / 2, sticker.y + stickerHeight / 2);
-      ctx.rotate((sticker.rotation * Math.PI) / 180);
-      ctx.drawImage(stickerImg, -stickerWidth / 2, -stickerHeight / 2, stickerWidth, stickerHeight);
-      ctx.restore();
-    }
-
-    const dataUrl = canvas.toDataURL("image/png");
-    setFilmStripDataUrl(dataUrl);
+    setFilmStripDataUrl(canvas.toDataURL("image/png"));
     setFilmStripReady(true);
-  }, [photos, layout, eventText, footerText, stickers]);
+  }, [photos, layout, eventText, selectedDesign]);
 
-  // Check if running in native app
+  // ─── Download / Share ─────────────────────────────────────────────────────
+
   const isNative = Capacitor.isNativePlatform();
 
-  // Save to gallery (native) or download (web)
   const downloadFilmStrip = async () => {
     if (!filmStripDataUrl) return;
-
     const timestamp = new Date().toISOString().slice(0, 10);
     const fileName = `cybershot-${timestamp}.png`;
 
     if (isNative) {
       try {
-        // Convert data URL to base64
         const base64Data = filmStripDataUrl.split(",")[1];
-
-        // Save to device gallery
         const result = await Filesystem.writeFile({
           path: fileName,
           data: base64Data,
           directory: Directory.Documents,
         });
-
-        // Show success feedback
-        alert("Photo saved to gallery!");
+        alert("Photo saved!");
         console.log("Saved to:", result.uri);
       } catch (error) {
         console.error("Error saving photo:", error);
         alert("Failed to save photo. Please try again.");
       }
     } else {
-      // Web fallback - improved download for mobile and desktop
       try {
         const blob = await (await fetch(filmStripDataUrl)).blob();
         const url = URL.createObjectURL(blob);
@@ -418,8 +407,7 @@ export default function Home() {
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-      } catch (error) {
-        console.error("Download error:", error);
+      } catch {
         const link = document.createElement("a");
         link.href = filmStripDataUrl;
         link.download = fileName;
@@ -428,37 +416,29 @@ export default function Home() {
     }
   };
 
-  // Print photo (web only)
   const printFilmStrip = () => {
     if (!filmStripDataUrl) return;
-
     const printWindow = window.open("", "", "width=800,height=600");
     if (printWindow) {
-      const htmlContent = `<html><head><title>Cyber-shot Booth Photo</title><style>body { margin: 0; padding: 20px; background: white; } img { max-width: 100%; height: auto; display: block; margin: 0 auto; } @media print { body { padding: 0; } }</style></head><body><img src="${filmStripDataUrl}" /></body></html>`;
-      printWindow.document.write(htmlContent);
+      printWindow.document.write(
+        `<html><head><title>Cyber-shot Booth Photo</title><style>body{margin:0;padding:20px;background:white;}img{max-width:100%;height:auto;display:block;margin:0 auto;}@media print{body{padding:0;}}</style></head><body><img src="${filmStripDataUrl}" /></body></html>`
+      );
       printWindow.document.close();
-      setTimeout(() => {
-        printWindow.print();
-      }, 250);
+      setTimeout(() => printWindow.print(), 250);
     }
   };
 
-  // Share photo (native only)
   const sharePhoto = async () => {
     if (!filmStripDataUrl || !isNative) return;
-
     try {
       const timestamp = new Date().toISOString().slice(0, 10);
       const fileName = `cybershot-${timestamp}.png`;
       const base64Data = filmStripDataUrl.split(",")[1];
-
-      // Save temporarily for sharing
       const result = await Filesystem.writeFile({
         path: fileName,
         data: base64Data,
         directory: Directory.Cache,
       });
-
       await Share.share({
         title: "Cyber-shot Photo",
         text: "Check out my photo from Cyber-shot Booth!",
@@ -470,34 +450,26 @@ export default function Home() {
     }
   };
 
-  // Reset
+  // ─── Navigation ───────────────────────────────────────────────────────────
+
   const reset = () => {
     setLayout(null);
     setPhotos([]);
-    setStickers([]);
     setEventText("");
-    setFooterText("");
     setFilmStripReady(false);
     setFilmStripDataUrl("");
-    setPreviewDataUrl("");
     setStep("layout");
     setCameraError("");
-    setSelectedSticker(null);
-    setSelectedPlacedSticker(null);
     setCameraFilter("original");
     setIsAutoCapturing(false);
     setCurrentPhotoIndex(0);
     setCountdown(null);
-    stopCamera();
-  };
-
-  // Toggle filter
-  const toggleFilter = () => {
-    setCameraFilter(cameraFilter === "original" ? "retro" : "original");
+    setSelectedDesign("plain");
   };
 
   const selectLayout = (type: LayoutType) => {
     setLayout(type);
+    setPhotos([]);
     setStep("camera");
   };
 
@@ -506,80 +478,24 @@ export default function Home() {
     generateFilmStrip();
   };
 
+  // When design selection changes, regenerate preview
   useEffect(() => {
-    if (step === "camera") {
-      startCamera();
+    if (step === "design" && photos.length > 0) {
+      generateFilmStrip();
     }
-  }, [step]);
+  }, [selectedDesign, step, photos, generateFilmStrip]);
 
-  useEffect(() => {
-    if (step === "stickers" && photos.length > 0) {
-      generatePreview();
-    }
-  }, [step, photos, generatePreview, eventText, footerText]);
-
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [stream]);
-
-  const handleStickerClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!selectedSticker) return;
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const newSticker: StickerPosition = {
-      id: `sticker-${Date.now()}`,
-      type: selectedSticker,
-      x,
-      y,
-      rotation: 0,
-      scale: 1,
-    };
-
-    setStickers([...stickers, newSticker]);
-  };
-
-  const handleStickerDrag = (id: string, dx: number, dy: number) => {
-    setStickers(
-      stickers.map((s) =>
-        s.id === id
-          ? {
-              ...s,
-              x: Math.max(0, Math.min(600 - 80 * s.scale, s.x + dx)),
-              y: Math.max(0, Math.min(600 - 80 * s.scale, s.y + dy)),
-            }
-          : s
-      )
-    );
-  };
-
-  const handleStickerResize = (id: string, scale: number) => {
-    setStickers(stickers.map((s) => (s.id === id ? { ...s, scale: Math.max(0.5, Math.min(2, scale)) } : s)));
-  };
-
-  const handleStickerRotate = (id: string, rotation: number) => {
-    setStickers(stickers.map((s) => (s.id === id ? { ...s, rotation } : s)));
-  };
-
-  const deleteSticker = (id: string) => {
-    setStickers(stickers.filter((s) => s.id !== id));
-    setSelectedPlacedSticker(null);
-  };
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div className="w-full h-screen bg-gradient-to-b from-[#b0b0b0] to-[#909090] flex items-center justify-center p-2">
-      {/* Step 1: Layout Selection */}
+
+      {/* ── Step 1: Layout Selection ── */}
       {step === "layout" && (
         <div className="camera-body rounded-xl p-4 w-full max-w-md flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <span className="font-display text-sm text-gray-600">Cyber-shot</span>
-            <div className="w-4 h-4 rounded-full bg-red-500"></div>
+            <div className="w-4 h-4 rounded-full bg-red-500" />
           </div>
 
           <div className="lcd-screen rounded-lg p-6 text-center">
@@ -599,11 +515,10 @@ export default function Home() {
                 onClick={() => selectLayout("strip")}
                 className="flex-1 bg-white border-4 border-gray-300 rounded-lg p-4 hover:bg-gray-100 transition"
               >
-                <div className="flex flex-col gap-1 mx-auto mb-2">
-                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
-                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
-                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
-                  <div className="w-8 h-2 bg-gray-400 rounded"></div>
+                <div className="flex flex-col gap-1 mx-auto mb-2 w-8">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="w-8 h-2 bg-gray-400 rounded" />
+                  ))}
                 </div>
                 <p className="font-display text-sm">4 PHOTOS</p>
               </button>
@@ -616,7 +531,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Step 2: Camera */}
+      {/* ── Step 2: Camera ── */}
       {step === "camera" && (
         <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2">
           <div className="camera-body rounded-xl p-4 flex-1 flex flex-col h-[80dvh]">
@@ -627,7 +542,7 @@ export default function Home() {
 
             {/* Camera View */}
             <div className="lcd-screen rounded-lg flex-1 overflow-hidden mb-3 flex items-center justify-center bg-black relative">
-              {!stream && cameraError && (
+              {cameraError && (
                 <div className="text-center text-white">
                   <p className="mb-4">{cameraError}</p>
                   <button
@@ -645,25 +560,28 @@ export default function Home() {
                 </div>
               )}
 
-              {stream && (
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  className={`w-full h-full object-cover ${cameraFilter === "retro" ? "brightness-110 contrast-125 saturate-150" : ""}`}
-                  style={{
-                    transform: "scaleX(-1)",
-                  }}
-                />
+              {/* Countdown overlay */}
+              {countdown !== null && (
+                <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+                  <span className="font-display text-8xl text-white drop-shadow-lg">{countdown}</span>
+                </div>
               )}
+
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${!stream ? "hidden" : ""} ${cameraFilter === "retro" ? "brightness-110 contrast-125 saturate-150" : ""}`}
+              />
             </div>
 
-            {/* Controls - Fixed at bottom */}
-            <div className="fixed bottom-0 left-0 right-0 h-[180px] bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 flex flex-col gap-2 overflow-auto">
+            {/* Controls */}
+            <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 flex flex-col gap-2">
               <div className="flex gap-2">
                 <button
                   onClick={toggleCamera}
-                  disabled={!stream}
+                  disabled={!stream || isAutoCapturing}
                   className="camera-btn flex-1 py-2 rounded-lg flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
                 >
                   <RefreshCw className="w-4 h-4" />
@@ -671,8 +589,9 @@ export default function Home() {
                 </button>
 
                 <button
-                  onClick={toggleFilter}
-                  className={`flex-1 py-2 rounded-lg font-display text-white text-sm ${
+                  onClick={() => setCameraFilter(cameraFilter === "original" ? "retro" : "original")}
+                  disabled={isAutoCapturing}
+                  className={`flex-1 py-2 rounded-lg font-display text-white text-sm disabled:opacity-50 ${
                     cameraFilter === "retro" ? "shutter-btn" : "camera-btn"
                   }`}
                 >
@@ -686,22 +605,21 @@ export default function Home() {
                     if (layout === "strip") {
                       setIsAutoCapturing(true);
                     } else {
-                      capturePhoto();
-                      setTimeout(() => setStep("stickers"), 500);
+                      capturePhoto().then(() => setTimeout(() => setStep("design"), 500));
                     }
                   }}
-                  disabled={!stream}
+                  disabled={!stream || isAutoCapturing}
                   className="shutter-btn flex-1 py-3 rounded-lg font-display text-white text-sm disabled:opacity-50"
                 >
-                  {countdown !== null ? `${countdown}` : layout === "strip" ? "START SEQUENCE" : "CAPTURE"}
+                  {isAutoCapturing
+                    ? `PHOTO ${currentPhotoIndex + 1} / 4`
+                    : countdown !== null
+                    ? `${countdown}`
+                    : layout === "strip"
+                    ? "START SEQUENCE"
+                    : "CAPTURE"}
                 </button>
               </div>
-
-              {layout === "strip" && (
-                <div className="text-center font-lcd text-sm lcd-text">
-                  {isAutoCapturing ? `PHOTO ${currentPhotoIndex + 1} OF 4` : ""}
-                </div>
-              )}
 
               <input
                 type="text"
@@ -715,143 +633,94 @@ export default function Home() {
         </div>
       )}
 
-      {/* Step 3: Stickers */}
-      {step === "stickers" && (
+      {/* ── Step 3: Design Selection ── */}
+      {step === "design" && (
         <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 overflow-auto">
-          <div className="camera-body rounded-xl p-4 flex-1 flex flex-col h-[80dvh]">
+          <div className="camera-body rounded-xl p-4 flex-1 flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <span className="font-display text-sm text-gray-600">Cyber-shot</span>
-              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">EDIT</span>
+              <span className="font-lcd text-sm lcd-text bg-black/80 px-2 py-1 rounded">DESIGN</span>
             </div>
 
             {/* Preview */}
-            <div className="lcd-screen rounded-lg flex-1 overflow-auto mb-3 flex items-center justify-center bg-black relative">
-              {previewDataUrl && (
-                <div
-                  className="relative cursor-crosshair"
-                  onClick={handleStickerClick}
-                  style={{
-                    backgroundImage: `url(${previewDataUrl})`,
-                    backgroundSize: "contain",
-                    backgroundRepeat: "no-repeat",
-                    backgroundPosition: "center",
-                    width: "100%",
-                    height: "100%",
-                  }}
-                >
-                  {stickers.map((sticker) => {
-                    const stickerData = STICKERS.find((s) => s.type === sticker.type);
-                    return (
-                      <div
-                        key={sticker.id}
-                        className={`absolute cursor-move ${selectedPlacedSticker === sticker.id ? "ring-2 ring-yellow-400" : ""}`}
-                        style={{
-                          left: `${sticker.x}px`,
-                          top: `${sticker.y}px`,
-                          width: `${80 * sticker.scale}px`,
-                          height: `${80 * sticker.scale}px`,
-                          transform: `rotate(${sticker.rotation}deg)`,
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedPlacedSticker(sticker.id);
-                        }}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          const startX = e.clientX;
-                          const startY = e.clientY;
-
-                          const handleMouseMove = (moveEvent: MouseEvent) => {
-                            const dx = moveEvent.clientX - startX;
-                            const dy = moveEvent.clientY - startY;
-                            handleStickerDrag(sticker.id, dx, dy);
-                          };
-
-                          const handleMouseUp = () => {
-                            document.removeEventListener("mousemove", handleMouseMove);
-                            document.removeEventListener("mouseup", handleMouseUp);
-                          };
-
-                          document.addEventListener("mousemove", handleMouseMove);
-                          document.addEventListener("mouseup", handleMouseUp);
-                        }}
-                      >
-                        <img src={stickerData?.src} alt={sticker.type} className="w-full h-full" />
-                      </div>
-                    );
-                  })}
+            <div className="lcd-screen rounded-lg flex-1 overflow-auto mb-3 flex items-center justify-center bg-black p-2">
+              {filmStripReady ? (
+                <img src={filmStripDataUrl} alt="Preview" className="max-w-full max-h-full object-contain rounded" />
+              ) : (
+                <div className="text-center">
+                  <div className="animate-spin w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full mx-auto mb-3" />
+                  <p className="font-lcd text-lg lcd-text">LOADING...</p>
                 </div>
               )}
             </div>
 
-            {/* Sticker Controls - Fixed at bottom */}
-            <div className="fixed bottom-0 left-0 right-0 h-[180px] bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 flex flex-col gap-2 overflow-auto">
-              <div className="flex gap-2 flex-wrap">
-                {STICKERS.map((sticker) => (
-                  <button
-                    key={sticker.type}
-                    onClick={() => setSelectedSticker(selectedSticker === sticker.type ? null : sticker.type)}
-                    className={`w-12 h-12 rounded-lg border-2 ${
-                      selectedSticker === sticker.type ? "border-yellow-400 bg-yellow-100" : "border-gray-300 bg-white"
-                    } flex items-center justify-center hover:border-yellow-400 transition`}
-                    title={sticker.label}
-                  >
-                    <img src={sticker.src} alt={sticker.label} className="w-8 h-8" />
-                  </button>
-                ))}
-              </div>
-
-              {selectedPlacedSticker && (
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleStickerRotate(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.rotation || 0) + 15)}
-                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
-                  >
-                    ROTATE
-                  </button>
-                  <button
-                    onClick={() => handleStickerResize(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.scale || 1) + 0.2)}
-                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
-                  >
-                    BIGGER
-                  </button>
-                  <button
-                    onClick={() => handleStickerResize(selectedPlacedSticker, (stickers.find((s) => s.id === selectedPlacedSticker)?.scale || 1) - 0.2)}
-                    className="camera-btn flex-1 py-2 rounded-lg text-sm"
-                  >
-                    SMALLER
-                  </button>
-                  <button
-                    onClick={() => deleteSticker(selectedPlacedSticker)}
-                    className="camera-btn px-2 py-2 rounded-lg"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+            {/* Design options */}
+            <div className="flex gap-3 mb-3">
+              {/* Plain option */}
+              <button
+                onClick={() => setSelectedDesign("plain")}
+                className={`flex-1 rounded-lg p-3 border-4 transition flex flex-col items-center gap-2 ${
+                  selectedDesign === "plain"
+                    ? "border-orange-500 bg-orange-50"
+                    : "border-gray-300 bg-white hover:bg-gray-50"
+                }`}
+              >
+                <div className="w-full h-16 bg-gray-100 border-2 border-gray-300 rounded flex items-center justify-center">
+                  <div className="flex flex-col gap-1 w-8">
+                    {layout === "strip"
+                      ? [0, 1, 2, 3].map((i) => <div key={i} className="w-8 h-1.5 bg-gray-400 rounded" />)
+                      : <div className="w-8 h-8 bg-gray-400 rounded" />}
+                  </div>
                 </div>
-              )}
+                <span className="font-display text-xs">PLAIN</span>
+              </button>
 
-              <input
-                type="text"
-                placeholder="Footer text (optional)"
-                value={footerText}
-                onChange={(e) => setFooterText(e.target.value)}
-                className="w-full px-3 py-2 rounded text-sm bg-white/80"
-              />
+              {/* Designed option */}
+              <button
+                onClick={() => setSelectedDesign("designed")}
+                className={`flex-1 rounded-lg p-3 border-4 transition flex flex-col items-center gap-2 ${
+                  selectedDesign === "designed"
+                    ? "border-orange-500 bg-orange-50"
+                    : "border-gray-300 bg-white hover:bg-gray-50"
+                }`}
+              >
+                <div className="w-full h-16 rounded overflow-hidden border-2 border-gray-300">
+                  <img
+                    src={layout === "strip" ? STRIP_OVERLAY : FRAME_OVERLAY}
+                    alt="Design preview"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <span className="font-display text-xs">DESIGNED</span>
+              </button>
+            </div>
 
-              <div className="flex gap-2">
-                <button onClick={reset} className="camera-btn flex-1 py-2 rounded-lg text-sm">
-                  BACK
-                </button>
-                <button onClick={moveToFinal} className="shutter-btn flex-1 py-2 rounded-lg text-white text-sm">
-                  DONE
-                </button>
-              </div>
+            {/* Actions */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setPhotos([]);
+                  setFilmStripReady(false);
+                  setFilmStripDataUrl("");
+                  setStep("camera");
+                }}
+                className="camera-btn flex-1 py-2 rounded-lg text-sm"
+              >
+                RETAKE
+              </button>
+              <button
+                onClick={moveToFinal}
+                disabled={!filmStripReady}
+                className="shutter-btn flex-1 py-2 rounded-lg text-white text-sm disabled:opacity-50"
+              >
+                DONE
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Step 4: Final Result */}
+      {/* ── Step 4: Final Result ── */}
       {step === "final" && (
         <div className="fixed inset-0 flex flex-col bg-gradient-to-b from-[#b0b0b0] to-[#909090] p-2 overflow-auto">
           <div className="camera-body rounded-xl p-4 flex-1 flex flex-col">
@@ -861,9 +730,9 @@ export default function Home() {
             </div>
 
             {/* Result preview */}
-            <div className="lcd-screen rounded-lg p-3 flex-1 overflow-auto">
+            <div className="lcd-screen rounded-lg p-3 flex-1 overflow-auto flex items-center justify-center">
               {filmStripReady ? (
-                <img src={filmStripDataUrl} alt="Film strip" className="w-full h-auto rounded" />
+                <img src={filmStripDataUrl} alt="Film strip" className="max-w-full max-h-full object-contain rounded" />
               ) : (
                 <div className="w-full h-64 flex items-center justify-center">
                   <div className="text-center">
@@ -918,7 +787,6 @@ export default function Home() {
       {/* Hidden canvases */}
       <canvas ref={canvasRef} className="hidden" />
       <canvas ref={filmStripCanvasRef} className="hidden" />
-      <canvas ref={previewCanvasRef} className="hidden" />
     </div>
   );
 }
